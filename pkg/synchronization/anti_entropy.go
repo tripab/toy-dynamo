@@ -1,21 +1,29 @@
 package synchronization
 
 import (
-// "github.com/tripab/toy-dynamo/pkg/versioning"
+	"github.com/tripab/toy-dynamo/pkg/membership"
+	"github.com/tripab/toy-dynamo/pkg/types"
 )
 
 // AntiEntropy performs background replica synchronization
 type AntiEntropy struct {
-	node   interface{}
-	config interface{}
-	trees  map[KeyRange]*MerkleTree
+	nodeID     string
+	storage    types.Storage
+	ring       types.Ring
+	membership *membership.Membership
+	config     types.Config
+	trees      map[KeyRange]*MerkleTree
 }
 
-func NewAntiEntropy(node interface{}, config interface{}) *AntiEntropy {
+// NewAntiEntropy creates a new AntiEntropy with typed dependencies
+func NewAntiEntropy(nodeID string, storage types.Storage, ring types.Ring, membershipMgr *membership.Membership, config types.Config) *AntiEntropy {
 	return &AntiEntropy{
-		node:   node,
-		config: config,
-		trees:  make(map[KeyRange]*MerkleTree),
+		nodeID:     nodeID,
+		storage:    storage,
+		ring:       ring,
+		membership: membershipMgr,
+		config:     config,
+		trees:      make(map[KeyRange]*MerkleTree),
 	}
 }
 

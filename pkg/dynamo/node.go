@@ -66,11 +66,11 @@ func NewNode(id, address string, config *Config) (*Node, error) {
 	// Initialize failure detector
 	node.failDetector = membership.NewFailureDetector(node.membership, config.RequestTimeout*3)
 
-	// Initialize replication components
-	node.replicator = replication.NewReplicator(node, config)
+	// Initialize replication components with typed interfaces
+	node.replicator = replication.NewReplicator(node, node.storage, node.ring, config)
 	node.coordinator = NewCoordinator(node)
-	node.hintedHoff = replication.NewHintedHandoff(node, config)
-	node.antiEntropy = synchronization.NewAntiEntropy(node, config)
+	node.hintedHoff = replication.NewHintedHandoff(node, node.membership, node.storage, config)
+	node.antiEntropy = synchronization.NewAntiEntropy(id, node.storage, node.ring, node.membership, config)
 
 	return node, nil
 }

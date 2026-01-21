@@ -4,16 +4,20 @@ import (
 	"math/rand"
 	"sync"
 	"time"
+
+	"github.com/tripab/toy-dynamo/pkg/types"
 )
 
+// Membership manages cluster membership information via gossip protocol
 type Membership struct {
 	localID string
 	address string
 	members map[string]*Member
-	config  interface{}
+	config  types.Config
 	mu      sync.RWMutex
 }
 
+// Member represents a node in the cluster
 type Member struct {
 	NodeID    string
 	Address   string
@@ -30,6 +34,7 @@ func (m *Member) GetAddress() string  { return m.Address }
 func (m *Member) GetStatus() int      { return int(m.Status) }
 func (m *Member) GetTokens() []uint32 { return m.Tokens }
 
+// MemberStatus represents the health status of a cluster member
 type MemberStatus int
 
 const (
@@ -38,7 +43,8 @@ const (
 	StatusDead
 )
 
-func NewMembership(nodeID, address string, config interface{}) *Membership {
+// NewMembership creates a new Membership with typed config
+func NewMembership(nodeID, address string, config types.Config) *Membership {
 	return &Membership{
 		localID: nodeID,
 		address: address,
