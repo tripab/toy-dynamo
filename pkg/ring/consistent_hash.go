@@ -162,3 +162,15 @@ func (r *Ring) GetNodeCount() int {
 	defer r.mu.RUnlock()
 	return len(r.nodes)
 }
+
+// GetTokens returns the virtual node tokens for a physical node
+func (r *Ring) GetTokens(nodeID string) []uint32 {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	node := r.nodes[nodeID]
+	if node == nil {
+		return nil
+	}
+	return node.VNodes
+}
