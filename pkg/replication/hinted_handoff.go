@@ -4,16 +4,22 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tripab/toy-dynamo/pkg/membership"
+	"github.com/tripab/toy-dynamo/pkg/types"
 	"github.com/tripab/toy-dynamo/pkg/versioning"
 )
 
+// HintedHandoff stores writes for temporarily unavailable nodes
 type HintedHandoff struct {
-	node   interface{}
-	config interface{}
-	hints  map[string][]*Hint
-	mu     sync.RWMutex
+	nodeInfo   types.NodeInfo
+	membership *membership.Membership
+	storage    types.Storage
+	config     types.Config
+	hints      map[string][]*Hint
+	mu         sync.RWMutex
 }
 
+// Hint represents a stored write for a temporarily unavailable node
 type Hint struct {
 	ForNode   string
 	Key       string
@@ -21,11 +27,14 @@ type Hint struct {
 	Timestamp time.Time
 }
 
-func NewHintedHandoff(node interface{}, config interface{}) *HintedHandoff {
+// NewHintedHandoff creates a new HintedHandoff with typed dependencies
+func NewHintedHandoff(nodeInfo types.NodeInfo, membershipMgr *membership.Membership, storage types.Storage, config types.Config) *HintedHandoff {
 	return &HintedHandoff{
-		node:   node,
-		config: config,
-		hints:  make(map[string][]*Hint),
+		nodeInfo:   nodeInfo,
+		membership: membershipMgr,
+		storage:    storage,
+		config:     config,
+		hints:      make(map[string][]*Hint),
 	}
 }
 
@@ -73,11 +82,17 @@ func (h *HintedHandoff) DeliverHints() {
 }
 
 func (h *HintedHandoff) isNodeAlive(nodeID string) bool {
-	// Would check membership status
-	return true
+	member := h.membership.GetMember(nodeID)
+	if member == nil {
+		return false
+	}
+	return member.Status == membership.StatusAlive
 }
 
 func (h *HintedHandoff) deliverHint(nodeID string, hint *Hint) bool {
-	// Would send hint to target node
+	// In production, would send hint via RPC to target node
+	// For now, this is a stub that will be implemented when RPC layer exists
+	_ = nodeID
+	_ = hint
 	return true
 }
