@@ -1,0 +1,25 @@
+# macOS
+.DS_Store
+
+# Build artifacts
+main
+*.exe
+
+# Agent communication and planning files
+CLAUDE.md
+AGENT_LOG.md
+AGENT_LOG_example.md
+PROJECT_PLAN.md
+COMMIT_SEQUENCE.md
+chat_session.md
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Go
+vendor/
+*.test
+coverage.out
