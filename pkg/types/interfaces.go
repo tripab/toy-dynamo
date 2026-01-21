@@ -1,6 +1,12 @@
 // Package types defines shared interfaces used across packages to avoid circular imports.
 // These interfaces enable dependency injection and type safety in components like
 // Replicator, HintedHandoff, AntiEntropy, and Membership.
+//
+// Note on interface design:
+// - Components may import concrete types (e.g., *membership.Membership) directly when
+//   Go's interface limitations prevent clean abstraction (return type variance).
+// - The interfaces here are designed to be satisfied by existing implementations
+//   without requiring changes to those implementations.
 package types
 
 import (
@@ -21,6 +27,7 @@ type Storage interface {
 }
 
 // MemberInfo represents basic information about a cluster member.
+// Implemented by: *membership.Member
 type MemberInfo interface {
 	GetNodeID() string
 	GetAddress() string
@@ -28,13 +35,12 @@ type MemberInfo interface {
 	GetTokens() []uint32
 }
 
-// Membership provides membership operations for components.
-// Implemented by: membership.Membership
-type Membership interface {
-	GetMember(nodeID string) MemberInfo
-	GetAllMembers() []MemberInfo
-	AddMember(nodeID, address string, status int, tokens []uint32)
-}
+// MemberStatus constants matching membership.MemberStatus
+const (
+	StatusAlive     = 0
+	StatusSuspected = 1
+	StatusDead      = 2
+)
 
 // Ring provides consistent hash ring operations for components.
 // Implemented by: ring.Ring
@@ -42,6 +48,10 @@ type Ring interface {
 	GetPreferenceList(key string, n int) []string
 	GetCoordinator(key string) string
 	GetNodeCount() int
+	GetTokens(nodeID string) []uint32
+	AddNode(nodeID string, vnodesCount int) []uint32
+	AddNodeWithTokens(nodeID string, tokens []uint32)
+	RemoveNode(nodeID string)
 }
 
 // Config provides configuration access for components.
@@ -64,4 +74,17 @@ type Config interface {
 type NodeInfo interface {
 	GetID() string
 	GetAddress() string
+}
+
+// RPCClient provides methods for making RPC calls to other nodes.
+// Will be implemented by: rpc.Client (in Phase 1.6)
+type RPCClient interface {
+	// Get retrieves values from a remote node
+	Get(address, key string) ([]versioning.VersionedValue, error)
+	// Put sends a value to a remote node
+	Put(address, key string, value versioning.VersionedValue) error
+	// Gossip exchanges membership information
+	GossipExchange(address string, members []MemberInfo) ([]MemberInfo, error)
+	// DeliverHint sends a hinted handoff to the target node
+	DeliverHint(address, key string, value versioning.VersionedValue) error
 }
