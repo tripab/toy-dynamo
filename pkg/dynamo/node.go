@@ -34,6 +34,9 @@ type Node struct {
 	rpcClient *rpc.Client
 	rpcServer *rpc.Server
 
+	// Tombstone compaction
+	tombstoneCompactor *storage.TombstoneCompactor
+
 	stopCh  chan struct{}
 	stopped bool
 	wg      sync.WaitGroup
@@ -86,6 +89,12 @@ func NewNode(id, address string, config *Config) (*Node, error) {
 	// Set RPC client on membership for gossip
 	node.membership.SetRPCClient(node.rpcClient)
 
+	// Initialize tombstone compactor for memory storage
+	// LSS storage has its own built-in compactor
+	if config.StorageEngine == "memory" {
+		node.tombstoneCompactor = storage.NewTombstoneCompactor(node.storage, config.TombstoneTTL)
+	}
+
 	return node, nil
 }
 
@@ -126,6 +135,12 @@ func (n *Node) Start() error {
 	if n.config.HintedHandoffEnabled {
 		n.wg.Add(1)
 		go n.hintedHandoffLoop()
+	}
+
+	// Start tombstone compaction for memory storage
+	if n.tombstoneCompactor != nil {
+		n.wg.Add(1)
+		go n.compactionLoop()
 	}
 
 	return nil
@@ -255,6 +270,23 @@ func (n *Node) hintedHandoffLoop() {
 		select {
 		case <-ticker.C:
 			n.hintedHoff.DeliverHints()
+		case <-n.stopCh:
+			return
+		}
+	}
+}
+
+func (n *Node) compactionLoop() {
+	defer n.wg.Done()
+	ticker := time.NewTicker(n.config.TombstoneCompactionInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			if n.tombstoneCompactor != nil {
+				n.tombstoneCompactor.Compact()
+			}
 		case <-n.stopCh:
 			return
 		}

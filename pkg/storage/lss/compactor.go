@@ -150,14 +150,21 @@ func (c *Compactor) mergeSegments(segments []*Segment) (*Segment, *Index, error)
 	// Create new index for the merged segment
 	newIndex := NewIndex()
 
+	// Calculate TTL cutoff for tombstones
+	now := time.Now()
+	tombstoneCutoff := now.Add(-c.engine.config.TombstoneTTL)
+
 	// Write all entries to new segment
 	for key, entries := range keyEntries {
 		for _, entry := range entries {
-			// Skip tombstones during compaction (they've done their job)
-			// In a full implementation, we'd keep tombstones for a TTL period
-			// to ensure they propagate to all replicas
+			// For tombstones, only skip if they're older than the TTL
+			// Newer tombstones must be kept to ensure they propagate to all replicas
 			if entry.IsTombstone {
-				continue
+				if entry.Timestamp.Before(tombstoneCutoff) {
+					// Tombstone is old enough to be garbage collected
+					continue
+				}
+				// Tombstone is recent, keep it to ensure propagation
 			}
 
 			offset, err := newSeg.Append(entry)

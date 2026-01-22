@@ -41,6 +41,13 @@ type Config struct {
 
 	// Enable read repair
 	ReadRepairEnabled bool
+
+	// Tombstone TTL - how long to keep tombstones before compaction removes them
+	// This ensures tombstones have time to propagate to all replicas
+	TombstoneTTL time.Duration
+
+	// Tombstone compaction interval - how often to run tombstone cleanup
+	TombstoneCompactionInterval time.Duration
 }
 
 func DefaultConfig() *Config {
@@ -56,8 +63,10 @@ func DefaultConfig() *Config {
 		HintedHandoffEnabled: true,
 		HintTimeout:          10 * time.Second,
 		VectorClockMaxSize:   10,
-		RequestTimeout:       300 * time.Millisecond,
-		ReadRepairEnabled:    true,
+		RequestTimeout:              300 * time.Millisecond,
+		ReadRepairEnabled:           true,
+		TombstoneTTL:                7 * 24 * time.Hour, // 7 days
+		TombstoneCompactionInterval: 1 * time.Hour,
 	}
 }
 
@@ -72,4 +81,6 @@ func (c *Config) GetHintedHandoffEnabled() bool        { return c.HintedHandoffE
 func (c *Config) GetHintTimeout() time.Duration        { return c.HintTimeout }
 func (c *Config) GetRequestTimeout() time.Duration     { return c.RequestTimeout }
 func (c *Config) GetReadRepairEnabled() bool           { return c.ReadRepairEnabled }
-func (c *Config) GetVectorClockMaxSize() int           { return c.VectorClockMaxSize }
+func (c *Config) GetVectorClockMaxSize() int                 { return c.VectorClockMaxSize }
+func (c *Config) GetTombstoneTTL() time.Duration             { return c.TombstoneTTL }
+func (c *Config) GetTombstoneCompactionInterval() time.Duration { return c.TombstoneCompactionInterval }
