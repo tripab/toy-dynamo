@@ -1,10 +1,12 @@
 package replication
 
 import (
+	"context"
 	"sync"
 	"time"
 
 	"github.com/tripab/toy-dynamo/pkg/membership"
+	"github.com/tripab/toy-dynamo/pkg/rpc"
 	"github.com/tripab/toy-dynamo/pkg/types"
 	"github.com/tripab/toy-dynamo/pkg/versioning"
 )
@@ -15,6 +17,7 @@ type HintedHandoff struct {
 	membership *membership.Membership
 	storage    types.Storage
 	config     types.Config
+	rpcClient  *rpc.Client
 	hints      map[string][]*Hint
 	mu         sync.RWMutex
 }
@@ -36,6 +39,13 @@ func NewHintedHandoff(nodeInfo types.NodeInfo, membershipMgr *membership.Members
 		config:     config,
 		hints:      make(map[string][]*Hint),
 	}
+}
+
+// SetRPCClient sets the RPC client for hint delivery
+func (h *HintedHandoff) SetRPCClient(client *rpc.Client) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.rpcClient = client
 }
 
 // StoreHint stores a hint for later delivery
@@ -90,9 +100,27 @@ func (h *HintedHandoff) isNodeAlive(nodeID string) bool {
 }
 
 func (h *HintedHandoff) deliverHint(nodeID string, hint *Hint) bool {
-	// In production, would send hint via RPC to target node
-	// For now, this is a stub that will be implemented when RPC layer exists
-	_ = nodeID
-	_ = hint
-	return true
+	// Check if RPC client is available
+	if h.rpcClient == nil {
+		return false
+	}
+
+	// Get the target node's address from membership
+	member := h.membership.GetMember(nodeID)
+	if member == nil {
+		return false
+	}
+
+	// Create context with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), h.config.GetRequestTimeout())
+	defer cancel()
+
+	// Deliver hint via RPC
+	resp, err := h.rpcClient.DeliverHint(ctx, member.Address, h.nodeInfo.GetID(), hint.Key, hint.Value)
+	if err != nil {
+		// Delivery failed - hint will be retried later
+		return false
+	}
+
+	return resp.Success
 }
