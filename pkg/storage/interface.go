@@ -3,6 +3,7 @@ package storage
 import (
 	"errors"
 
+	"github.com/tripab/toy-dynamo/pkg/storage/lss"
 	"github.com/tripab/toy-dynamo/pkg/versioning"
 )
 
@@ -37,6 +38,9 @@ func NewStorage(engineType, path, nodeID string) (Storage, error) {
 	switch engineType {
 	case "memory":
 		return NewMemoryStorage(), nil
+	case "lss":
+		config := lss.DefaultConfig(path)
+		return lss.NewLSSEngine(config)
 	case "boltdb":
 		return NewBoltDBStorage(path, nodeID)
 	case "badger":
