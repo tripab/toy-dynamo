@@ -102,6 +102,7 @@ func (dto *VersionedValueDTO) ToVersionedValue() versioning.VersionedValue {
 	return versioning.VersionedValue{
 		Data:        dto.Data,
 		VectorClock: vc,
+		IsTombstone: dto.IsTombstone,
 	}
 }
 
@@ -117,6 +118,7 @@ func FromVersionedValue(vv versioning.VersionedValue) VersionedValueDTO {
 		Data:        vv.Data,
 		VectorClock: vcMap,
 		Timestamp:   time.Now(),
+		IsTombstone: vv.IsTombstone,
 	}
 }
 

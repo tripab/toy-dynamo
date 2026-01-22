@@ -153,11 +153,77 @@ func (c *Coordinator) Put(ctx context.Context, key string, value []byte, context
 	return nil
 }
 
-// Delete removes a key (tombstone)
+// Delete removes a key by writing a tombstone
 func (c *Coordinator) Delete(ctx context.Context, key string, context *Context) error {
-	// Deletion is implemented as a write with empty value
-	// In production, you'd use a tombstone marker
-	return c.Put(ctx, key, nil, context)
+	// 1. Determine preference list
+	preferenceList := c.node.ring.GetPreferenceList(key, c.node.config.N)
+	if len(preferenceList) == 0 {
+		return ErrNodeNotFound
+	}
+
+	// 2. Generate new version for the tombstone
+	var newClock *versioning.VectorClock
+	if context != nil && context.VectorClock != nil {
+		newClock = context.VectorClock.Copy()
+	} else {
+		newClock = versioning.NewVectorClock()
+	}
+	newClock.Increment(c.node.id)
+
+	// Prune if necessary
+	newClock.Prune(c.node.config.VectorClockMaxSize)
+
+	// Create tombstone (empty value with IsTombstone flag)
+	tombstone := versioning.VersionedValue{
+		Data:        nil,
+		VectorClock: newClock,
+		IsTombstone: true,
+	}
+
+	// 3. Send write requests to N replicas
+	type response struct {
+		nodeID string
+		err    error
+	}
+
+	responses := make(chan response, len(preferenceList))
+
+	for _, nodeID := range preferenceList {
+		go func(nid string) {
+			err := c.writeToNode(nid, key, tombstone)
+			responses <- response{nodeID: nid, err: err}
+		}(nodeID)
+	}
+
+	// 4. Wait for W acknowledgments or timeout
+	acks := 0
+	failedNodes := make([]string, 0)
+	timeout := time.After(c.node.config.RequestTimeout)
+
+	for acks < c.node.config.W && len(failedNodes) < len(preferenceList) {
+		select {
+		case resp := <-responses:
+			if resp.err == nil {
+				acks++
+			} else {
+				failedNodes = append(failedNodes, resp.nodeID)
+			}
+		case <-timeout:
+			if acks == 0 {
+				return ErrTimeout
+			}
+			return ErrWriteQuorumFailed
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+
+	// 5. Handle hinted handoff for failed nodes
+	if c.node.config.HintedHandoffEnabled && len(failedNodes) > 0 {
+		c.handleHintedHandoff(key, tombstone, failedNodes, preferenceList)
+	}
+
+	return nil
 }
 
 func (c *Coordinator) readFromNode(nodeID string, key string) ([]versioning.VersionedValue, error) {
