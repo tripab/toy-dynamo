@@ -6,11 +6,19 @@ import (
 	"github.com/tripab/toy-dynamo/pkg/versioning"
 )
 
-// BadgerStorage uses BadgerDB for persistent storage
+// BadgerStorage uses BadgerDB for persistent storage.
+//
+// Deprecated: BadgerStorage is a stub implementation that does not persist data.
+// Use the LSS (Log-Structured Storage) engine instead for actual persistence:
+//
+//	storage, err := storage.NewStorage("lss", "/path/to/data", "node-id")
+//
+// The LSS engine provides a custom implementation that demonstrates storage engine
+// internals including write-ahead logging, compaction, and crash recovery.
 type BadgerStorage struct {
 	path   string
 	nodeID string
-	// In production: db *badger.DB
+	// This is a stub - no actual BadgerDB integration
 }
 
 func NewBadgerStorage(path, nodeID string) (*BadgerStorage, error) {

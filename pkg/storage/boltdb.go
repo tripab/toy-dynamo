@@ -6,11 +6,19 @@ import (
 	"github.com/tripab/toy-dynamo/pkg/versioning"
 )
 
-// BoltDBStorage uses BoltDB for persistent storage
+// BoltDBStorage uses BoltDB for persistent storage.
+//
+// Deprecated: BoltDBStorage is a stub implementation that does not persist data.
+// Use the LSS (Log-Structured Storage) engine instead for actual persistence:
+//
+//	storage, err := storage.NewStorage("lss", "/path/to/data", "node-id")
+//
+// The LSS engine provides a custom implementation that demonstrates storage engine
+// internals including write-ahead logging, compaction, and crash recovery.
 type BoltDBStorage struct {
 	path   string
 	nodeID string
-	// In production, would have: db *bolt.DB
+	// This is a stub - no actual BoltDB integration
 }
 
 func NewBoltDBStorage(path, nodeID string) (*BoltDBStorage, error) {
