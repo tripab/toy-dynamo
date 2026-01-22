@@ -34,9 +34,10 @@ type Node struct {
 	rpcClient *rpc.Client
 	rpcServer *rpc.Server
 
-	stopCh chan struct{}
-	wg     sync.WaitGroup
-	mu     sync.RWMutex
+	stopCh  chan struct{}
+	stopped bool
+	wg      sync.WaitGroup
+	mu      sync.RWMutex
 }
 
 // NewNode creates a new Dynamo node
@@ -81,6 +82,9 @@ func NewNode(id, address string, config *Config) (*Node, error) {
 	// Initialize RPC client and server
 	node.rpcClient = rpc.NewClient(config.RequestTimeout)
 	node.rpcServer = rpc.NewServer(address, node)
+
+	// Set RPC client on membership for gossip
+	node.membership.SetRPCClient(node.rpcClient)
 
 	return node, nil
 }
@@ -129,7 +133,15 @@ func (n *Node) Start() error {
 
 // Stop gracefully stops the node
 func (n *Node) Stop() error {
+	n.mu.Lock()
+	if n.stopped {
+		n.mu.Unlock()
+		return nil
+	}
+	n.stopped = true
 	close(n.stopCh)
+	n.mu.Unlock()
+
 	n.wg.Wait()
 
 	// Stop RPC server

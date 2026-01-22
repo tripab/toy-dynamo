@@ -1,20 +1,24 @@
 package membership
 
 import (
+	"context"
+	"fmt"
 	"math/rand"
 	"sync"
 	"time"
 
+	"github.com/tripab/toy-dynamo/pkg/rpc"
 	"github.com/tripab/toy-dynamo/pkg/types"
 )
 
 // Membership manages cluster membership information via gossip protocol
 type Membership struct {
-	localID string
-	address string
-	members map[string]*Member
-	config  types.Config
-	mu      sync.RWMutex
+	localID   string
+	address   string
+	members   map[string]*Member
+	config    types.Config
+	rpcClient *rpc.Client
+	mu        sync.RWMutex
 }
 
 // Member represents a node in the cluster
@@ -46,11 +50,17 @@ const (
 // NewMembership creates a new Membership with typed config
 func NewMembership(nodeID, address string, config types.Config) *Membership {
 	return &Membership{
-		localID: nodeID,
-		address: address,
-		members: make(map[string]*Member),
-		config:  config,
+		localID:   nodeID,
+		address:   address,
+		members:   make(map[string]*Member),
+		config:    config,
+		rpcClient: nil, // Set via SetRPCClient after initialization
 	}
+}
+
+// SetRPCClient sets the RPC client for network communication
+func (m *Membership) SetRPCClient(client *rpc.Client) {
+	m.rpcClient = client
 }
 
 // AddMember adds or updates a member
@@ -126,13 +136,101 @@ func (m *Membership) selectRandomPeer() string {
 }
 
 func (m *Membership) gossipWith(peerID string) {
-	// In production, this would be an RPC call
-	// For now, it's a no-op
+	if m.rpcClient == nil {
+		return
+	}
+
+	m.mu.RLock()
+	peer := m.members[peerID]
+	if peer == nil {
+		m.mu.RUnlock()
+		return
+	}
+	peerAddress := peer.Address
+
+	// Build our membership list to send
+	memberDTOs := m.buildMemberDTOs()
+	m.mu.RUnlock()
+
+	// Exchange membership info via RPC
+	ctx, cancel := context.WithTimeout(context.Background(), m.config.GetRequestTimeout())
+	defer cancel()
+
+	resp, err := m.rpcClient.Gossip(ctx, peerAddress, m.localID, memberDTOs)
+	if err != nil {
+		// Peer might be down - failure detector will handle it
+		return
+	}
+
+	// Merge received membership info
+	m.mergeMembers(resp.Members)
 }
 
 // SyncWithSeed contacts a seed node to get membership
-func (m *Membership) SyncWithSeed(seed string) ([]*Member, error) {
-	// In production, make RPC call to seed
-	// Return membership list
-	return []*Member{}, nil
+func (m *Membership) SyncWithSeed(seedAddress string) ([]*Member, error) {
+	if m.rpcClient == nil {
+		return nil, fmt.Errorf("RPC client not initialized")
+	}
+
+	// Build our membership list (just ourselves initially)
+	m.mu.RLock()
+	memberDTOs := m.buildMemberDTOs()
+	m.mu.RUnlock()
+
+	// Contact seed node
+	ctx, cancel := context.WithTimeout(context.Background(), m.config.GetRequestTimeout())
+	defer cancel()
+
+	resp, err := m.rpcClient.Gossip(ctx, seedAddress, m.localID, memberDTOs)
+	if err != nil {
+		return nil, fmt.Errorf("failed to sync with seed %s: %w", seedAddress, err)
+	}
+
+	// Merge received membership info and return
+	m.mergeMembers(resp.Members)
+
+	// Return the members we received
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	members := make([]*Member, 0, len(m.members))
+	for _, member := range m.members {
+		members = append(members, member)
+	}
+	return members, nil
+}
+
+// buildMemberDTOs converts local members to DTOs for RPC
+func (m *Membership) buildMemberDTOs() []rpc.MemberDTO {
+	dtos := make([]rpc.MemberDTO, 0, len(m.members))
+	for _, member := range m.members {
+		dtos = append(dtos, rpc.MemberDTO{
+			NodeID:    member.NodeID,
+			Address:   member.Address,
+			Status:    int(member.Status),
+			Heartbeat: member.Heartbeat,
+			Tokens:    member.Tokens,
+			Timestamp: member.Timestamp,
+		})
+	}
+	return dtos
+}
+
+// mergeMembers merges received membership information
+func (m *Membership) mergeMembers(members []rpc.MemberDTO) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for _, dto := range members {
+		existing := m.members[dto.NodeID]
+		if existing == nil || dto.Heartbeat > existing.Heartbeat {
+			m.members[dto.NodeID] = &Member{
+				NodeID:    dto.NodeID,
+				Address:   dto.Address,
+				Status:    MemberStatus(dto.Status),
+				Heartbeat: dto.Heartbeat,
+				Tokens:    dto.Tokens,
+				Timestamp: dto.Timestamp,
+			}
+		}
+	}
 }
