@@ -9,8 +9,10 @@ import (
 	"github.com/tripab/toy-dynamo/pkg/membership"
 	"github.com/tripab/toy-dynamo/pkg/replication"
 	"github.com/tripab/toy-dynamo/pkg/ring"
+	"github.com/tripab/toy-dynamo/pkg/rpc"
 	"github.com/tripab/toy-dynamo/pkg/storage"
 	"github.com/tripab/toy-dynamo/pkg/synchronization"
+	"github.com/tripab/toy-dynamo/pkg/versioning"
 )
 
 // Node represents a Dynamo storage node
@@ -27,6 +29,10 @@ type Node struct {
 	antiEntropy  *synchronization.AntiEntropy
 	hintedHoff   *replication.HintedHandoff
 	failDetector *membership.FailureDetector
+
+	// RPC components for inter-node communication
+	rpcClient *rpc.Client
+	rpcServer *rpc.Server
 
 	stopCh chan struct{}
 	wg     sync.WaitGroup
@@ -72,6 +78,10 @@ func NewNode(id, address string, config *Config) (*Node, error) {
 	node.hintedHoff = replication.NewHintedHandoff(node, node.membership, node.storage, config)
 	node.antiEntropy = synchronization.NewAntiEntropy(id, node.storage, node.ring, node.membership, config)
 
+	// Initialize RPC client and server
+	node.rpcClient = rpc.NewClient(config.RequestTimeout)
+	node.rpcServer = rpc.NewServer(address, node)
+
 	return node, nil
 }
 
@@ -79,6 +89,11 @@ func NewNode(id, address string, config *Config) (*Node, error) {
 func (n *Node) Start() error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
+
+	// Start RPC server first
+	if err := n.rpcServer.Start(); err != nil {
+		return fmt.Errorf("failed to start RPC server: %w", err)
+	}
 
 	// Add self to ring
 	member := &membership.Member{
@@ -116,6 +131,18 @@ func (n *Node) Start() error {
 func (n *Node) Stop() error {
 	close(n.stopCh)
 	n.wg.Wait()
+
+	// Stop RPC server
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := n.rpcServer.Stop(ctx); err != nil {
+		// Log but don't fail
+		fmt.Printf("Warning: RPC server shutdown error: %v\n", err)
+	}
+
+	// Close RPC client
+	n.rpcClient.Close()
+
 	return n.storage.Close()
 }
 
@@ -242,3 +269,104 @@ func validateConfig(c *Config) error {
 
 func (n *Node) GetID() string      { return n.id }
 func (n *Node) GetAddress() string { return n.address }
+
+// NodeOperations interface implementation for RPC server
+
+// GetNodeID returns this node's ID (implements rpc.NodeOperations)
+func (n *Node) GetNodeID() string {
+	return n.id
+}
+
+// LocalGet retrieves values from local storage (implements rpc.NodeOperations)
+func (n *Node) LocalGet(key string) ([]versioning.VersionedValue, error) {
+	return n.storage.Get(key)
+}
+
+// LocalPut stores a value in local storage (implements rpc.NodeOperations)
+func (n *Node) LocalPut(key string, value versioning.VersionedValue) error {
+	return n.storage.Put(key, value)
+}
+
+// HandleGossip processes incoming gossip and returns local membership (implements rpc.NodeOperations)
+func (n *Node) HandleGossip(members []rpc.MemberDTO) []rpc.MemberDTO {
+	// Merge incoming membership information
+	for _, m := range members {
+		existing := n.membership.GetMember(m.NodeID)
+		if existing == nil || m.Heartbeat > existing.Heartbeat {
+			// Add or update member
+			member := &membership.Member{
+				NodeID:    m.NodeID,
+				Address:   m.Address,
+				Status:    membership.MemberStatus(m.Status),
+				Heartbeat: m.Heartbeat,
+				Tokens:    m.Tokens,
+				Timestamp: m.Timestamp,
+			}
+			n.membership.AddMember(member)
+
+			// Also add to ring if new
+			if existing == nil && m.NodeID != n.id {
+				n.ring.AddNodeWithTokens(m.NodeID, m.Tokens)
+			}
+		}
+	}
+
+	// Return our membership list
+	localMembers := n.membership.GetAllMembers()
+	result := make([]rpc.MemberDTO, len(localMembers))
+	for i, m := range localMembers {
+		result[i] = rpc.MemberDTO{
+			NodeID:    m.NodeID,
+			Address:   m.Address,
+			Status:    int(m.Status),
+			Heartbeat: m.Heartbeat,
+			Tokens:    m.Tokens,
+			Timestamp: m.Timestamp,
+		}
+	}
+	return result
+}
+
+// HandleSync processes anti-entropy sync request (implements rpc.NodeOperations)
+func (n *Node) HandleSync(req *rpc.SyncRequest) *rpc.SyncResponse {
+	// Get data for the requested key range
+	data, err := n.storage.GetRange(req.KeyRange.Start, req.KeyRange.End)
+	if err != nil {
+		return &rpc.SyncResponse{Error: err.Error()}
+	}
+
+	// Build Merkle tree for the range
+	treeData := make(map[string][]byte)
+	for key, values := range data {
+		// Serialize values for tree
+		for _, v := range values {
+			treeData[key] = v.Data
+		}
+	}
+
+	keyRange := synchronization.KeyRange{Start: req.KeyRange.Start, End: req.KeyRange.End}
+	tree := synchronization.NewMerkleTree(keyRange)
+	tree.Build(treeData)
+
+	// Find differences if remote tree root provided
+	var differences []string
+	if len(req.TreeRoot) > 0 {
+		// In a full implementation, we'd deserialize and compare trees
+		// For now, return all keys as potential differences
+		for key := range data {
+			differences = append(differences, key)
+		}
+	}
+
+	return &rpc.SyncResponse{
+		TreeRoot:    []byte(tree.GetRootHash()),
+		Differences: differences,
+	}
+}
+
+// HandleHint processes a hinted handoff delivery (implements rpc.NodeOperations)
+func (n *Node) HandleHint(req *rpc.HintRequest) error {
+	// Store the hinted value locally
+	value := req.Value.ToVersionedValue()
+	return n.storage.Put(req.Key, value)
+}

@@ -11,6 +11,7 @@ var (
 	ErrKeyNotFound       = errors.New("key not found")
 	ErrReadQuorumFailed  = errors.New("read quorum not satisfied")
 	ErrWriteQuorumFailed = errors.New("write quorum not satisfied")
+	ErrWriteFailed       = errors.New("write failed")
 	ErrNodeNotFound      = errors.New("node not found")
 	ErrInvalidConfig     = errors.New("invalid configuration")
 	ErrTimeout           = errors.New("operation timeout")

@@ -166,14 +166,22 @@ func (c *Coordinator) readFromNode(nodeID string, key string) ([]versioning.Vers
 		return c.node.storage.Get(key)
 	}
 
-	// Remote read - would use RPC in production
+	// Remote read via RPC
 	member := c.node.membership.GetMember(nodeID)
 	if member == nil || member.Status != membership.StatusAlive {
 		return nil, ErrNodeNotFound
 	}
 
-	// Simplified: In production, this would be an RPC call
-	return c.node.storage.Get(key) // Placeholder
+	// Use RPC client to read from remote node
+	ctx, cancel := context.WithTimeout(context.Background(), c.node.config.RequestTimeout)
+	defer cancel()
+
+	values, err := c.node.rpcClient.GetValues(ctx, member.Address, key)
+	if err != nil {
+		return nil, err
+	}
+
+	return values, nil
 }
 
 func (c *Coordinator) writeToNode(nodeID string, key string, value versioning.VersionedValue) error {
@@ -182,14 +190,26 @@ func (c *Coordinator) writeToNode(nodeID string, key string, value versioning.Ve
 		return c.node.storage.Put(key, value)
 	}
 
-	// Remote write - would use RPC in production
+	// Remote write via RPC
 	member := c.node.membership.GetMember(nodeID)
 	if member == nil || member.Status != membership.StatusAlive {
 		return ErrNodeNotFound
 	}
 
-	// Simplified: In production, this would be an RPC call
-	return c.node.storage.Put(key, value) // Placeholder
+	// Use RPC client to write to remote node
+	ctx, cancel := context.WithTimeout(context.Background(), c.node.config.RequestTimeout)
+	defer cancel()
+
+	resp, err := c.node.rpcClient.Put(ctx, member.Address, key, value)
+	if err != nil {
+		return err
+	}
+
+	if !resp.Success {
+		return ErrWriteFailed
+	}
+
+	return nil
 }
 
 func (c *Coordinator) readRepair(key string, latest []versioning.VersionedValue, preferenceList []string) {
