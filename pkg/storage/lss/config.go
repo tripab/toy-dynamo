@@ -21,6 +21,11 @@ type Config struct {
 
 	// SyncOnWrite forces fsync after each write (default: false for performance)
 	SyncOnWrite bool
+
+	// TombstoneTTL is how long to keep tombstones before they can be removed
+	// during compaction (default: 7 days). This ensures tombstones have time
+	// to propagate to all replicas before being garbage collected.
+	TombstoneTTL time.Duration
 }
 
 // DefaultConfig returns a Config with sensible defaults
@@ -31,5 +36,6 @@ func DefaultConfig(dataDir string) *Config {
 		CompactionInterval:   5 * time.Minute,
 		MinSegmentsToCompact: 3,
 		SyncOnWrite:          false,
+		TombstoneTTL:         7 * 24 * time.Hour, // 7 days
 	}
 }

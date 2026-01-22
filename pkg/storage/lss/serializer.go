@@ -28,17 +28,22 @@ type Entry struct {
 // EntryFromVersionedValue creates an Entry from a key and VersionedValue
 func EntryFromVersionedValue(key string, vv versioning.VersionedValue) *Entry {
 	vc := make(map[string]uint64)
+	var timestamp time.Time
 	if vv.VectorClock != nil {
 		for k, v := range vv.VectorClock.Versions {
 			vc[k] = v
 		}
+		timestamp = vv.VectorClock.Timestamp
+	}
+	if timestamp.IsZero() {
+		timestamp = time.Now()
 	}
 	return &Entry{
 		Key:         key,
 		Value:       vv.Data,
 		VectorClock: vc,
-		Timestamp:   time.Now(),
-		IsTombstone: len(vv.Data) == 0,
+		Timestamp:   timestamp,
+		IsTombstone: vv.IsTombstone,
 	}
 }
 
@@ -48,9 +53,11 @@ func (e *Entry) ToVersionedValue() versioning.VersionedValue {
 	for k, v := range e.VectorClock {
 		vc.Versions[k] = v
 	}
+	vc.Timestamp = e.Timestamp
 	return versioning.VersionedValue{
 		Data:        e.Value,
 		VectorClock: vc,
+		IsTombstone: e.IsTombstone,
 	}
 }
 
