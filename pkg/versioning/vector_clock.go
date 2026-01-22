@@ -201,8 +201,11 @@ func ReconcileConcurrent(versions []VersionedValue) []VersionedValue {
 type VersionedValue struct {
 	Data        []byte
 	VectorClock *VectorClock
+	IsTombstone bool
 }
 
 func (v *VersionedValue) Equals(other *VersionedValue) bool {
-	return bytes.Equal(v.Data, other.Data) && v.VectorClock.Equals(other.VectorClock)
+	return bytes.Equal(v.Data, other.Data) &&
+		v.VectorClock.Equals(other.VectorClock) &&
+		v.IsTombstone == other.IsTombstone
 }
