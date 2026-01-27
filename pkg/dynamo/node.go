@@ -92,6 +92,9 @@ func NewNode(id, address string, config *Config) (*Node, error) {
 	// Set RPC client on hinted handoff for hint delivery
 	node.hintedHoff.SetRPCClient(node.rpcClient)
 
+	// Set RPC client on anti-entropy for replica synchronization
+	node.antiEntropy.SetRPCClient(node.rpcClient)
+
 	// Initialize tombstone compactor for memory storage
 	// LSS storage has its own built-in compactor
 	if config.StorageEngine == "memory" {
