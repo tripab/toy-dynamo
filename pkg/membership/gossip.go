@@ -13,12 +13,13 @@ import (
 
 // Membership manages cluster membership information via gossip protocol
 type Membership struct {
-	localID   string
-	address   string
-	members   map[string]*Member
-	config    types.Config
-	rpcClient *rpc.Client
-	mu        sync.RWMutex
+	localID         string
+	address         string
+	members         map[string]*Member
+	config          types.Config
+	rpcClient       *rpc.Client
+	failureDetector *FailureDetector
+	mu              sync.RWMutex
 }
 
 // Member represents a node in the cluster
@@ -61,6 +62,11 @@ func NewMembership(nodeID, address string, config types.Config) *Membership {
 // SetRPCClient sets the RPC client for network communication
 func (m *Membership) SetRPCClient(client *rpc.Client) {
 	m.rpcClient = client
+}
+
+// SetFailureDetector sets the failure detector for heartbeat recording
+func (m *Membership) SetFailureDetector(fd *FailureDetector) {
+	m.failureDetector = fd
 }
 
 // AddMember adds or updates a member
@@ -230,6 +236,12 @@ func (m *Membership) mergeMembers(members []rpc.MemberDTO) {
 				Heartbeat: dto.Heartbeat,
 				Tokens:    dto.Tokens,
 				Timestamp: dto.Timestamp,
+			}
+
+			// Record heartbeat for failure detection
+			// This indicates we received fresh info about this node
+			if m.failureDetector != nil && dto.NodeID != m.localID {
+				m.failureDetector.RecordHeartbeat(dto.NodeID)
 			}
 		}
 	}
