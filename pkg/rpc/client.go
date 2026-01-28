@@ -14,9 +14,11 @@ import (
 
 // Client is an HTTP-based RPC client for inter-node communication
 type Client struct {
-	pool       *ConnectionPool
-	timeout    time.Duration
-	httpClient *http.Client // Fallback client when pool is not used
+	pool           *ConnectionPool
+	timeout        time.Duration
+	httpClient     *http.Client // Fallback client when pool is not used
+	circuitBreaker *CircuitBreakerManager
+	retryer        *Retryer
 }
 
 // ClientConfig holds configuration for the RPC client
@@ -27,14 +29,26 @@ type ClientConfig struct {
 	PoolConfig *PoolConfig
 	// UsePool enables connection pooling (default: true)
 	UsePool bool
+	// CircuitBreakerConfig configures circuit breaker behavior (nil uses defaults)
+	CircuitBreakerConfig *CircuitBreakerConfig
+	// RetryConfig configures retry behavior (nil uses defaults)
+	RetryConfig *RetryConfig
+	// EnableCircuitBreaker enables circuit breaker (default: true)
+	EnableCircuitBreaker bool
+	// EnableRetry enables retry with exponential backoff (default: true)
+	EnableRetry bool
 }
 
 // DefaultClientConfig returns sensible defaults for the RPC client
 func DefaultClientConfig() *ClientConfig {
 	return &ClientConfig{
-		Timeout:    5 * time.Second,
-		PoolConfig: DefaultPoolConfig(),
-		UsePool:    true,
+		Timeout:              5 * time.Second,
+		PoolConfig:           DefaultPoolConfig(),
+		UsePool:              true,
+		CircuitBreakerConfig: DefaultCircuitBreakerConfig(),
+		RetryConfig:          DefaultRetryConfig(),
+		EnableCircuitBreaker: true,
+		EnableRetry:          true,
 	}
 }
 
@@ -47,8 +61,10 @@ func NewClient(timeout time.Duration) *Client {
 	pool := NewConnectionPool(poolConfig)
 
 	return &Client{
-		pool:    pool,
-		timeout: timeout,
+		pool:           pool,
+		timeout:        timeout,
+		circuitBreaker: NewCircuitBreakerManager(DefaultCircuitBreakerConfig()),
+		retryer:        NewRetryer(DefaultRetryConfig()),
 	}
 }
 
@@ -80,14 +96,34 @@ func NewClientWithConfig(config *ClientConfig) *Client {
 		}
 	}
 
+	// Initialize circuit breaker if enabled
+	if config.EnableCircuitBreaker {
+		cbConfig := config.CircuitBreakerConfig
+		if cbConfig == nil {
+			cbConfig = DefaultCircuitBreakerConfig()
+		}
+		client.circuitBreaker = NewCircuitBreakerManager(cbConfig)
+	}
+
+	// Initialize retryer if enabled
+	if config.EnableRetry {
+		retryConfig := config.RetryConfig
+		if retryConfig == nil {
+			retryConfig = DefaultRetryConfig()
+		}
+		client.retryer = NewRetryer(retryConfig)
+	}
+
 	return client
 }
 
 // NewClientWithPool creates a new RPC client using the given connection pool
 func NewClientWithPool(pool *ConnectionPool, timeout time.Duration) *Client {
 	return &Client{
-		pool:    pool,
-		timeout: timeout,
+		pool:           pool,
+		timeout:        timeout,
+		circuitBreaker: NewCircuitBreakerManager(DefaultCircuitBreakerConfig()),
+		retryer:        NewRetryer(DefaultRetryConfig()),
 	}
 }
 
@@ -199,6 +235,33 @@ func (c *Client) DeliverHint(ctx context.Context, address string, originalNode, 
 
 // Health checks if a remote node is healthy
 func (c *Client) Health(ctx context.Context, address string) error {
+	// Check circuit breaker first - but health checks should bypass it
+	// to allow recovery detection
+	operation := func() error {
+		return c.healthInternal(ctx, address)
+	}
+
+	var err error
+	if c.retryer != nil {
+		err = c.retryer.Do(ctx, operation)
+	} else {
+		err = operation()
+	}
+
+	// Update circuit breaker based on health check result
+	if c.circuitBreaker != nil {
+		if err != nil {
+			c.circuitBreaker.RecordFailure(address)
+		} else {
+			c.circuitBreaker.RecordSuccess(address)
+		}
+	}
+
+	return err
+}
+
+// healthInternal performs the actual health check
+func (c *Client) healthInternal(ctx context.Context, address string) error {
 	url := fmt.Sprintf("http://%s/health", address)
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -228,7 +291,39 @@ func (c *Client) Health(ctx context.Context, address string) error {
 }
 
 // doRequest performs an HTTP POST request with JSON encoding
+// It integrates circuit breaker and retry logic when configured
 func (c *Client) doRequest(ctx context.Context, address, path string, reqBody any, respBody any) error {
+	// Check circuit breaker first
+	if c.circuitBreaker != nil && !c.circuitBreaker.Allow(address) {
+		return fmt.Errorf("%w for %s", ErrCircuitOpen, address)
+	}
+
+	// The actual request operation
+	operation := func() error {
+		return c.doRequestInternal(ctx, address, path, reqBody, respBody)
+	}
+
+	var err error
+	if c.retryer != nil {
+		err = c.retryer.Do(ctx, operation)
+	} else {
+		err = operation()
+	}
+
+	// Update circuit breaker based on result
+	if c.circuitBreaker != nil {
+		if err != nil {
+			c.circuitBreaker.RecordFailure(address)
+		} else {
+			c.circuitBreaker.RecordSuccess(address)
+		}
+	}
+
+	return err
+}
+
+// doRequestInternal performs the actual HTTP request without retry logic
+func (c *Client) doRequestInternal(ctx context.Context, address, path string, reqBody any, respBody any) error {
 	url := fmt.Sprintf("http://%s%s", address, path)
 
 	body, err := json.Marshal(reqBody)
@@ -314,4 +409,35 @@ func (c *Client) Close() {
 	if c.httpClient != nil {
 		c.httpClient.CloseIdleConnections()
 	}
+}
+
+// GetCircuitBreakerState returns the circuit breaker state for the given address
+func (c *Client) GetCircuitBreakerState(address string) CircuitState {
+	if c.circuitBreaker != nil {
+		return c.circuitBreaker.State(address)
+	}
+	return StateClosed // No circuit breaker means always closed
+}
+
+// ResetCircuitBreaker resets the circuit breaker for the given address
+func (c *Client) ResetCircuitBreaker(address string) {
+	if c.circuitBreaker != nil {
+		c.circuitBreaker.Reset(address)
+	}
+}
+
+// GetCircuitBreakerStats returns statistics about all circuit breakers
+func (c *Client) GetCircuitBreakerStats() map[string]CircuitBreakerStats {
+	if c.circuitBreaker != nil {
+		return c.circuitBreaker.Stats()
+	}
+	return nil
+}
+
+// IsCircuitOpen returns true if the circuit breaker for the address is open
+func (c *Client) IsCircuitOpen(address string) bool {
+	if c.circuitBreaker != nil {
+		return c.circuitBreaker.State(address) == StateOpen
+	}
+	return false
 }
