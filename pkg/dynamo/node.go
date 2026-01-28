@@ -89,6 +89,9 @@ func NewNode(id, address string, config *Config) (*Node, error) {
 	// Set RPC client on membership for gossip
 	node.membership.SetRPCClient(node.rpcClient)
 
+	// Set failure detector on membership for heartbeat recording
+	node.membership.SetFailureDetector(node.failDetector)
+
 	// Set RPC client on hinted handoff for hint delivery
 	node.hintedHoff.SetRPCClient(node.rpcClient)
 
@@ -316,6 +319,24 @@ func validateConfig(c *Config) error {
 
 func (n *Node) GetID() string      { return n.id }
 func (n *Node) GetAddress() string { return n.address }
+
+// GetFailureDetector returns the failure detector for external monitoring
+func (n *Node) GetFailureDetector() *membership.FailureDetector {
+	return n.failDetector
+}
+
+// IsNodeAlive returns true if the specified node is considered alive
+func (n *Node) IsNodeAlive(nodeID string) bool {
+	if nodeID == n.id {
+		return true // Self is always alive
+	}
+	return n.failDetector.IsAlive(nodeID)
+}
+
+// GetAliveNodes returns all nodes currently considered alive
+func (n *Node) GetAliveNodes() []string {
+	return n.failDetector.GetAliveNodes()
+}
 
 // NodeOperations interface implementation for RPC server
 

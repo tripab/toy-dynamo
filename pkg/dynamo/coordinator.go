@@ -368,3 +368,55 @@ func (c *Coordinator) handleHintedHandoff(key string, value versioning.Versioned
 		}
 	}
 }
+
+// getFilteredPreferenceList returns nodes that are not known to be dead
+// This implements sloppy quorum by skipping nodes that are definitely unreachable
+// Suspected nodes are still included (they may be temporarily unreachable)
+func (c *Coordinator) getFilteredPreferenceList(key string) []string {
+	preferenceList := c.node.ring.GetPreferenceList(key, c.node.config.N)
+	filtered := make([]string, 0, len(preferenceList))
+
+	for _, nodeID := range preferenceList {
+		// Always include local node
+		if nodeID == c.node.id {
+			filtered = append(filtered, nodeID)
+			continue
+		}
+
+		// Skip nodes that are marked as dead
+		member := c.node.membership.GetMember(nodeID)
+		if member == nil {
+			continue
+		}
+
+		// Include alive and suspected nodes (suspected may still be reachable)
+		if member.Status != membership.StatusDead {
+			filtered = append(filtered, nodeID)
+		}
+	}
+
+	return filtered
+}
+
+// getAlivePreferenceList returns only nodes that are considered alive
+// This is more strict and excludes suspected nodes
+func (c *Coordinator) getAlivePreferenceList(key string) []string {
+	preferenceList := c.node.ring.GetPreferenceList(key, c.node.config.N)
+	filtered := make([]string, 0, len(preferenceList))
+
+	for _, nodeID := range preferenceList {
+		// Always include local node
+		if nodeID == c.node.id {
+			filtered = append(filtered, nodeID)
+			continue
+		}
+
+		// Only include nodes that are alive
+		member := c.node.membership.GetMember(nodeID)
+		if member != nil && member.Status == membership.StatusAlive {
+			filtered = append(filtered, nodeID)
+		}
+	}
+
+	return filtered
+}
