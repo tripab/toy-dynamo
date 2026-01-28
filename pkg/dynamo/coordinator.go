@@ -280,6 +280,7 @@ func (c *Coordinator) writeToNode(nodeID string, key string, value versioning.Ve
 
 func (c *Coordinator) readRepair(key string, latest []versioning.VersionedValue, preferenceList []string) {
 	// Update replicas with stale data
+	// This runs asynchronously so don't block on errors
 	for _, nodeID := range preferenceList {
 		if nodeID == c.node.id {
 			continue
@@ -287,33 +288,57 @@ func (c *Coordinator) readRepair(key string, latest []versioning.VersionedValue,
 
 		current, err := c.readFromNode(nodeID, key)
 		if err != nil {
+			// Node might be unreachable - skip it
 			continue
 		}
 
-		// Check if this node has stale data
+		// Check if this node has stale data using vector clock comparison
 		if c.hasStaleData(current, latest) {
-			// Send the latest version
+			// Send each latest version to bring the replica up to date
+			// We send all latest versions because they might be concurrent
 			for _, v := range latest {
-				c.writeToNode(nodeID, key, v)
+				if err := c.writeToNode(nodeID, key, v); err != nil {
+					// Best effort - continue with other versions
+					continue
+				}
 			}
 		}
 	}
 }
 
+// hasStaleData checks if current values are stale compared to latest values
+// using vector clock causality. A node has stale data if:
+// 1. It has no data at all
+// 2. Any of its versions are ancestors (causally before) the latest versions
+// 3. It's missing any of the latest concurrent versions
 func (c *Coordinator) hasStaleData(current, latest []versioning.VersionedValue) bool {
-	if len(current) == 0 {
+	if len(current) == 0 && len(latest) > 0 {
 		return true
 	}
 
+	if len(latest) == 0 {
+		return false
+	}
+
+	// For each latest version, check if the current node has it or something newer
 	for _, l := range latest {
-		found := false
-		for _, c := range current {
-			if c.Equals(&l) {
-				found = true
+		hasLatestOrNewer := false
+
+		for _, curr := range current {
+			ordering := curr.VectorClock.Compare(l.VectorClock)
+			// Current has this version or something newer/equal
+			if ordering == versioning.Equal || ordering == versioning.After {
+				hasLatestOrNewer = true
+				break
+			}
+			// If concurrent, check if data and tombstone status match (same version)
+			if ordering == versioning.Concurrent && curr.Equals(&l) {
+				hasLatestOrNewer = true
 				break
 			}
 		}
-		if !found {
+
+		if !hasLatestOrNewer {
 			return true
 		}
 	}
