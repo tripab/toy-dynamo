@@ -14,23 +14,89 @@ import (
 
 // Client is an HTTP-based RPC client for inter-node communication
 type Client struct {
-	httpClient *http.Client
+	pool       *ConnectionPool
 	timeout    time.Duration
+	httpClient *http.Client // Fallback client when pool is not used
+}
+
+// ClientConfig holds configuration for the RPC client
+type ClientConfig struct {
+	// Timeout for individual RPC requests
+	Timeout time.Duration
+	// PoolConfig configures connection pooling (nil uses defaults)
+	PoolConfig *PoolConfig
+	// UsePool enables connection pooling (default: true)
+	UsePool bool
+}
+
+// DefaultClientConfig returns sensible defaults for the RPC client
+func DefaultClientConfig() *ClientConfig {
+	return &ClientConfig{
+		Timeout:    5 * time.Second,
+		PoolConfig: DefaultPoolConfig(),
+		UsePool:    true,
+	}
 }
 
 // NewClient creates a new RPC client with the specified timeout
+// Deprecated: Use NewClientWithConfig for connection pooling support
 func NewClient(timeout time.Duration) *Client {
+	// Create a default pool for backward compatibility
+	poolConfig := DefaultPoolConfig()
+	poolConfig.ConnTimeout = timeout
+	pool := NewConnectionPool(poolConfig)
+
 	return &Client{
-		httpClient: &http.Client{
-			Timeout: timeout,
+		pool:    pool,
+		timeout: timeout,
+	}
+}
+
+// NewClientWithConfig creates a new RPC client with the given configuration
+func NewClientWithConfig(config *ClientConfig) *Client {
+	if config == nil {
+		config = DefaultClientConfig()
+	}
+
+	client := &Client{
+		timeout: config.Timeout,
+	}
+
+	if config.UsePool {
+		poolConfig := config.PoolConfig
+		if poolConfig == nil {
+			poolConfig = DefaultPoolConfig()
+		}
+		client.pool = NewConnectionPool(poolConfig)
+	} else {
+		// Create a simple HTTP client without pooling
+		client.httpClient = &http.Client{
+			Timeout: config.Timeout,
 			Transport: &http.Transport{
 				MaxIdleConns:        100,
 				MaxIdleConnsPerHost: 10,
 				IdleConnTimeout:     90 * time.Second,
 			},
-		},
+		}
+	}
+
+	return client
+}
+
+// NewClientWithPool creates a new RPC client using the given connection pool
+func NewClientWithPool(pool *ConnectionPool, timeout time.Duration) *Client {
+	return &Client{
+		pool:    pool,
 		timeout: timeout,
 	}
+}
+
+// getHTTPClient returns the appropriate HTTP client for the given address
+func (c *Client) getHTTPClient(address string) (*http.Client, error) {
+	if c.pool != nil {
+		return c.pool.GetClient(address)
+	}
+	return c.httpClient, nil
 }
 
 // Get retrieves values from a remote node
@@ -135,21 +201,29 @@ func (c *Client) DeliverHint(ctx context.Context, address string, originalNode, 
 func (c *Client) Health(ctx context.Context, address string) error {
 	url := fmt.Sprintf("http://%s/health", address)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrNodeUnreachable, err)
 	}
 
-	resp, err := c.httpClient.Do(req)
+	httpClient, err := c.getHTTPClient(address)
 	if err != nil {
+		return fmt.Errorf("%w: %v", ErrNodeUnreachable, err)
+	}
+
+	resp, err := httpClient.Do(httpReq)
+	if err != nil {
+		c.markNodeUnhealthy(address)
 		return fmt.Errorf("%w: %v", ErrNodeUnreachable, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		c.markNodeUnhealthy(address)
 		return fmt.Errorf("%w: status %d", ErrServerError, resp.StatusCode)
 	}
 
+	c.markNodeHealthy(address)
 	return nil
 }
 
@@ -162,20 +236,27 @@ func (c *Client) doRequest(ctx context.Context, address, path string, reqBody an
 		return fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrNodeUnreachable, err)
 	}
-	req.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Content-Type", "application/json")
 
-	resp, err := c.httpClient.Do(req)
+	httpClient, err := c.getHTTPClient(address)
 	if err != nil {
+		return fmt.Errorf("%w: %v", ErrNodeUnreachable, err)
+	}
+
+	resp, err := httpClient.Do(httpReq)
+	if err != nil {
+		c.markNodeUnhealthy(address)
 		return fmt.Errorf("%w: %v", ErrNodeUnreachable, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		bodyBytes, _ := io.ReadAll(resp.Body)
+		c.markNodeUnhealthy(address)
 		return fmt.Errorf("%w: status %d, body: %s", ErrServerError, resp.StatusCode, string(bodyBytes))
 	}
 
@@ -183,10 +264,54 @@ func (c *Client) doRequest(ctx context.Context, address, path string, reqBody an
 		return fmt.Errorf("%w: %v", ErrInvalidResponse, err)
 	}
 
+	c.markNodeHealthy(address)
 	return nil
+}
+
+// markNodeUnhealthy marks a node as unhealthy in the pool
+func (c *Client) markNodeUnhealthy(address string) {
+	if c.pool != nil {
+		c.pool.MarkUnhealthy(address)
+	}
+}
+
+// markNodeHealthy marks a node as healthy in the pool
+func (c *Client) markNodeHealthy(address string) {
+	if c.pool != nil {
+		c.pool.MarkHealthy(address)
+	}
+}
+
+// IsNodeHealthy returns whether the node at the given address is considered healthy
+func (c *Client) IsNodeHealthy(address string) bool {
+	if c.pool != nil {
+		return c.pool.IsHealthy(address)
+	}
+	return true // Without pooling, assume healthy
+}
+
+// GetPoolStats returns statistics about the connection pool
+func (c *Client) GetPoolStats() *PoolStats {
+	if c.pool != nil {
+		stats := c.pool.Stats()
+		return &stats
+	}
+	return nil
+}
+
+// RemoveNode removes a node from the connection pool
+func (c *Client) RemoveNode(address string) {
+	if c.pool != nil {
+		c.pool.RemoveNode(address)
+	}
 }
 
 // Close closes the client and releases resources
 func (c *Client) Close() {
-	c.httpClient.CloseIdleConnections()
+	if c.pool != nil {
+		c.pool.Close()
+	}
+	if c.httpClient != nil {
+		c.httpClient.CloseIdleConnections()
+	}
 }
