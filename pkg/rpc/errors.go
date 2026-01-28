@@ -20,4 +20,10 @@ var (
 
 	// ErrWriteFailed is returned when a write operation fails
 	ErrWriteFailed = errors.New("write failed")
+
+	// ErrPoolClosed is returned when trying to use a closed connection pool
+	ErrPoolClosed = errors.New("connection pool is closed")
+
+	// ErrNodeUnhealthy is returned when the target node is marked as unhealthy
+	ErrNodeUnhealthy = errors.New("node is unhealthy")
 )
