@@ -11,7 +11,8 @@ import (
 
 // Coordinator manages request coordination with state machine approach
 type Coordinator struct {
-	node *Node
+	node     *Node
+	selector *CoordinatorSelector
 }
 
 func NewCoordinator(node *Node) *Coordinator {
@@ -20,12 +21,22 @@ func NewCoordinator(node *Node) *Coordinator {
 	}
 }
 
+// SetSelector sets the coordinator selector for latency-based routing.
+func (c *Coordinator) SetSelector(selector *CoordinatorSelector) {
+	c.selector = selector
+}
+
 // Get retrieves a value with quorum semantics
 func (c *Coordinator) Get(ctx context.Context, key string) (*GetResult, error) {
 	// 1. Determine preference list
 	preferenceList := c.node.ring.GetPreferenceList(key, c.node.config.N)
 	if len(preferenceList) == 0 {
 		return nil, ErrNodeNotFound
+	}
+
+	// Reorder by latency if coordinator selection is enabled
+	if c.selector != nil {
+		preferenceList = c.selector.ReorderByLatency(preferenceList)
 	}
 
 	// 2. Send read requests to all N replicas
@@ -88,6 +99,11 @@ func (c *Coordinator) Put(ctx context.Context, key string, value []byte, context
 	preferenceList := c.node.ring.GetPreferenceList(key, c.node.config.N)
 	if len(preferenceList) == 0 {
 		return ErrNodeNotFound
+	}
+
+	// Reorder by latency if coordinator selection is enabled
+	if c.selector != nil {
+		preferenceList = c.selector.ReorderByLatency(preferenceList)
 	}
 
 	// 2. Generate new version
@@ -161,6 +177,11 @@ func (c *Coordinator) Delete(ctx context.Context, key string, context *Context) 
 		return ErrNodeNotFound
 	}
 
+	// Reorder by latency if coordinator selection is enabled
+	if c.selector != nil {
+		preferenceList = c.selector.ReorderByLatency(preferenceList)
+	}
+
 	// 2. Generate new version for the tombstone
 	var newClock *versioning.VectorClock
 	if context != nil && context.VectorClock != nil {
@@ -229,7 +250,12 @@ func (c *Coordinator) Delete(ctx context.Context, key string, context *Context) 
 func (c *Coordinator) readFromNode(nodeID string, key string) ([]versioning.VersionedValue, error) {
 	if nodeID == c.node.id {
 		// Local read
-		return c.node.storage.Get(key)
+		start := time.Now()
+		values, err := c.node.storage.Get(key)
+		if c.selector != nil {
+			c.selector.RecordLatency(nodeID, time.Since(start))
+		}
+		return values, err
 	}
 
 	// Remote read via RPC
@@ -242,7 +268,11 @@ func (c *Coordinator) readFromNode(nodeID string, key string) ([]versioning.Vers
 	ctx, cancel := context.WithTimeout(context.Background(), c.node.config.RequestTimeout)
 	defer cancel()
 
+	start := time.Now()
 	values, err := c.node.rpcClient.GetValues(ctx, member.Address, key)
+	if c.selector != nil {
+		c.selector.RecordLatency(nodeID, time.Since(start))
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -253,7 +283,12 @@ func (c *Coordinator) readFromNode(nodeID string, key string) ([]versioning.Vers
 func (c *Coordinator) writeToNode(nodeID string, key string, value versioning.VersionedValue) error {
 	if nodeID == c.node.id {
 		// Local write
-		return c.node.storage.Put(key, value)
+		start := time.Now()
+		err := c.node.storage.Put(key, value)
+		if c.selector != nil {
+			c.selector.RecordLatency(nodeID, time.Since(start))
+		}
+		return err
 	}
 
 	// Remote write via RPC
@@ -266,7 +301,11 @@ func (c *Coordinator) writeToNode(nodeID string, key string, value versioning.Ve
 	ctx, cancel := context.WithTimeout(context.Background(), c.node.config.RequestTimeout)
 	defer cancel()
 
+	start := time.Now()
 	resp, err := c.node.rpcClient.Put(ctx, member.Address, key, value)
+	if c.selector != nil {
+		c.selector.RecordLatency(nodeID, time.Since(start))
+	}
 	if err != nil {
 		return err
 	}

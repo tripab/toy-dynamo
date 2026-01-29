@@ -91,6 +91,14 @@ type Config struct {
 
 	// AdmissionWindowSize is the number of latency samples for p99 calculation
 	AdmissionWindowSize int
+
+	// Coordinator selection settings - picks fastest node as coordinator for writes
+
+	// CoordinatorSelectionEnabled enables latency-based coordinator selection
+	CoordinatorSelectionEnabled bool
+
+	// CoordinatorSelectionWindowSize is the number of latency samples per node
+	CoordinatorSelectionWindowSize int
 }
 
 func DefaultConfig() *Config {
@@ -126,6 +134,9 @@ func DefaultConfig() *Config {
 		AdmissionMaxBackgroundSlots: 10,
 		AdmissionMinBackgroundSlots: 1,
 		AdmissionWindowSize:         1000,
+		// Coordinator selection defaults
+		CoordinatorSelectionEnabled:    true,
+		CoordinatorSelectionWindowSize: 100,
 	}
 }
 
@@ -158,3 +169,7 @@ func (c *Config) GetAdmissionLatencyThreshold() time.Duration { return c.Admissi
 func (c *Config) GetAdmissionMaxBackgroundSlots() int         { return c.AdmissionMaxBackgroundSlots }
 func (c *Config) GetAdmissionMinBackgroundSlots() int         { return c.AdmissionMinBackgroundSlots }
 func (c *Config) GetAdmissionWindowSize() int                 { return c.AdmissionWindowSize }
+
+// Coordinator selection getters
+func (c *Config) GetCoordinatorSelectionEnabled() bool    { return c.CoordinatorSelectionEnabled }
+func (c *Config) GetCoordinatorSelectionWindowSize() int  { return c.CoordinatorSelectionWindowSize }
