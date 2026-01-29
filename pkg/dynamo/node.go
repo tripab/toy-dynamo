@@ -40,6 +40,9 @@ type Node struct {
 	// Admission control for background task throttling
 	admissionController *AdmissionController
 
+	// Coordinator selection for latency-based routing
+	coordinatorSelector *CoordinatorSelector
+
 	stopCh  chan struct{}
 	stopped bool
 	wg      sync.WaitGroup
@@ -115,6 +118,14 @@ func NewNode(id, address string, config *Config) (*Node, error) {
 			MinBackgroundSlots: config.AdmissionMinBackgroundSlots,
 			WindowSize:         config.AdmissionWindowSize,
 		})
+	}
+
+	// Initialize coordinator selector for latency-based routing
+	if config.CoordinatorSelectionEnabled {
+		node.coordinatorSelector = NewCoordinatorSelector(&CoordinatorSelectorConfig{
+			WindowSize: config.CoordinatorSelectionWindowSize,
+		})
+		node.coordinator.SetSelector(node.coordinatorSelector)
 	}
 
 	return node, nil
@@ -409,6 +420,12 @@ func (n *Node) IsBackgroundThrottled() bool {
 		return false
 	}
 	return n.admissionController.ShouldThrottle()
+}
+
+// GetCoordinatorSelector returns the coordinator selector for external monitoring.
+// Returns nil if coordinator selection is disabled.
+func (n *Node) GetCoordinatorSelector() *CoordinatorSelector {
+	return n.coordinatorSelector
 }
 
 // NodeOperations interface implementation for RPC server
