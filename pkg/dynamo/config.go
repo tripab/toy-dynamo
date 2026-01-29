@@ -74,6 +74,23 @@ type Config struct {
 
 	// EnableRetry enables retry with exponential backoff for RPC calls
 	EnableRetry bool
+
+	// Admission control settings - throttles background tasks when foreground latency is high
+
+	// AdmissionControlEnabled enables the admission controller
+	AdmissionControlEnabled bool
+
+	// AdmissionLatencyThreshold is the p99 latency threshold above which background tasks are throttled
+	AdmissionLatencyThreshold time.Duration
+
+	// AdmissionMaxBackgroundSlots is the maximum number of background task slots
+	AdmissionMaxBackgroundSlots int
+
+	// AdmissionMinBackgroundSlots is the minimum number of background task slots
+	AdmissionMinBackgroundSlots int
+
+	// AdmissionWindowSize is the number of latency samples for p99 calculation
+	AdmissionWindowSize int
 }
 
 func DefaultConfig() *Config {
@@ -103,21 +120,27 @@ func DefaultConfig() *Config {
 		CircuitBreakerResetTimeout: 30 * time.Second,
 		EnableCircuitBreaker:       true,
 		EnableRetry:                true,
+		// Admission control defaults
+		AdmissionControlEnabled:     true,
+		AdmissionLatencyThreshold:   100 * time.Millisecond,
+		AdmissionMaxBackgroundSlots: 10,
+		AdmissionMinBackgroundSlots: 1,
+		AdmissionWindowSize:         1000,
 	}
 }
 
 // Getter methods to implement types.Config interface
 
-func (c *Config) GetN() int                            { return c.N }
-func (c *Config) GetR() int                            { return c.R }
-func (c *Config) GetW() int                            { return c.W }
-func (c *Config) GetGossipInterval() time.Duration     { return c.GossipInterval }
-func (c *Config) GetAntiEntropyInterval() time.Duration { return c.AntiEntropyInterval }
-func (c *Config) GetHintedHandoffEnabled() bool        { return c.HintedHandoffEnabled }
-func (c *Config) GetHintTimeout() time.Duration        { return c.HintTimeout }
-func (c *Config) GetRequestTimeout() time.Duration     { return c.RequestTimeout }
-func (c *Config) GetReadRepairEnabled() bool           { return c.ReadRepairEnabled }
-func (c *Config) GetVectorClockMaxSize() int                 { return c.VectorClockMaxSize }
+func (c *Config) GetN() int                                     { return c.N }
+func (c *Config) GetR() int                                     { return c.R }
+func (c *Config) GetW() int                                     { return c.W }
+func (c *Config) GetGossipInterval() time.Duration              { return c.GossipInterval }
+func (c *Config) GetAntiEntropyInterval() time.Duration         { return c.AntiEntropyInterval }
+func (c *Config) GetHintedHandoffEnabled() bool                 { return c.HintedHandoffEnabled }
+func (c *Config) GetHintTimeout() time.Duration                 { return c.HintTimeout }
+func (c *Config) GetRequestTimeout() time.Duration              { return c.RequestTimeout }
+func (c *Config) GetReadRepairEnabled() bool                    { return c.ReadRepairEnabled }
+func (c *Config) GetVectorClockMaxSize() int                    { return c.VectorClockMaxSize }
 func (c *Config) GetTombstoneTTL() time.Duration                { return c.TombstoneTTL }
 func (c *Config) GetTombstoneCompactionInterval() time.Duration { return c.TombstoneCompactionInterval }
 func (c *Config) GetMaxRetries() int                            { return c.MaxRetries }
@@ -128,3 +151,10 @@ func (c *Config) GetCircuitBreakerThreshold() int               { return c.Circu
 func (c *Config) GetCircuitBreakerResetTimeout() time.Duration  { return c.CircuitBreakerResetTimeout }
 func (c *Config) GetEnableCircuitBreaker() bool                 { return c.EnableCircuitBreaker }
 func (c *Config) GetEnableRetry() bool                          { return c.EnableRetry }
+
+// Admission control getters
+func (c *Config) GetAdmissionControlEnabled() bool            { return c.AdmissionControlEnabled }
+func (c *Config) GetAdmissionLatencyThreshold() time.Duration { return c.AdmissionLatencyThreshold }
+func (c *Config) GetAdmissionMaxBackgroundSlots() int         { return c.AdmissionMaxBackgroundSlots }
+func (c *Config) GetAdmissionMinBackgroundSlots() int         { return c.AdmissionMinBackgroundSlots }
+func (c *Config) GetAdmissionWindowSize() int                 { return c.AdmissionWindowSize }
