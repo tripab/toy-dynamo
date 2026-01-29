@@ -37,6 +37,9 @@ type Node struct {
 	// Tombstone compaction
 	tombstoneCompactor *storage.TombstoneCompactor
 
+	// Admission control for background task throttling
+	admissionController *AdmissionController
+
 	stopCh  chan struct{}
 	stopped bool
 	wg      sync.WaitGroup
@@ -102,6 +105,16 @@ func NewNode(id, address string, config *Config) (*Node, error) {
 	// LSS storage has its own built-in compactor
 	if config.StorageEngine == "memory" {
 		node.tombstoneCompactor = storage.NewTombstoneCompactor(node.storage, config.TombstoneTTL)
+	}
+
+	// Initialize admission controller for background task throttling
+	if config.AdmissionControlEnabled {
+		node.admissionController = NewAdmissionController(&AdmissionControlConfig{
+			LatencyThreshold:   config.AdmissionLatencyThreshold,
+			MaxBackgroundSlots: config.AdmissionMaxBackgroundSlots,
+			MinBackgroundSlots: config.AdmissionMinBackgroundSlots,
+			WindowSize:         config.AdmissionWindowSize,
+		})
 	}
 
 	return node, nil
@@ -210,17 +223,41 @@ func (n *Node) Join(seeds []string) error {
 
 // Get retrieves a value by key
 func (n *Node) Get(ctx context.Context, key string) (*GetResult, error) {
-	return n.coordinator.Get(ctx, key)
+	start := time.Now()
+	result, err := n.coordinator.Get(ctx, key)
+
+	// Record latency for admission control
+	if n.admissionController != nil {
+		n.admissionController.RecordLatency(time.Since(start))
+	}
+
+	return result, err
 }
 
 // Put stores a key-value pair
 func (n *Node) Put(ctx context.Context, key string, value []byte, context *Context) error {
-	return n.coordinator.Put(ctx, key, value, context)
+	start := time.Now()
+	err := n.coordinator.Put(ctx, key, value, context)
+
+	// Record latency for admission control
+	if n.admissionController != nil {
+		n.admissionController.RecordLatency(time.Since(start))
+	}
+
+	return err
 }
 
 // Delete removes a key
 func (n *Node) Delete(ctx context.Context, key string, context *Context) error {
-	return n.coordinator.Delete(ctx, key, context)
+	start := time.Now()
+	err := n.coordinator.Delete(ctx, key, context)
+
+	// Record latency for admission control
+	if n.admissionController != nil {
+		n.admissionController.RecordLatency(time.Since(start))
+	}
+
+	return err
 }
 
 // Background loops
@@ -233,6 +270,11 @@ func (n *Node) gossipLoop() {
 	for {
 		select {
 		case <-ticker.C:
+			// Check admission control before gossiping
+			if n.admissionController != nil && !n.admissionController.AllowBackground() {
+				// Skip this gossip round due to high foreground latency
+				continue
+			}
 			n.membership.Gossip()
 		case <-n.stopCh:
 			return
@@ -263,6 +305,11 @@ func (n *Node) antiEntropyLoop() {
 	for {
 		select {
 		case <-ticker.C:
+			// Check admission control before running anti-entropy
+			if n.admissionController != nil && !n.admissionController.AllowBackground() {
+				// Skip this anti-entropy round due to high foreground latency
+				continue
+			}
 			n.antiEntropy.Run()
 		case <-n.stopCh:
 			return
@@ -278,6 +325,11 @@ func (n *Node) hintedHandoffLoop() {
 	for {
 		select {
 		case <-ticker.C:
+			// Check admission control before delivering hints
+			if n.admissionController != nil && !n.admissionController.AllowBackground() {
+				// Skip this hint delivery round due to high foreground latency
+				continue
+			}
 			n.hintedHoff.DeliverHints()
 		case <-n.stopCh:
 			return
@@ -339,6 +391,24 @@ func (n *Node) IsNodeAlive(nodeID string) bool {
 // GetAliveNodes returns all nodes currently considered alive
 func (n *Node) GetAliveNodes() []string {
 	return n.failDetector.GetAliveNodes()
+}
+
+// GetAdmissionStats returns the current admission control statistics
+// Returns nil if admission control is disabled
+func (n *Node) GetAdmissionStats() *AdmissionStats {
+	if n.admissionController == nil {
+		return nil
+	}
+	stats := n.admissionController.GetStats()
+	return &stats
+}
+
+// IsBackgroundThrottled returns true if background tasks are currently being throttled
+func (n *Node) IsBackgroundThrottled() bool {
+	if n.admissionController == nil {
+		return false
+	}
+	return n.admissionController.ShouldThrottle()
 }
 
 // NodeOperations interface implementation for RPC server
