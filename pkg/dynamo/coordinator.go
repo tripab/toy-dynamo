@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/tripab/toy-dynamo/pkg/membership"
+	"github.com/tripab/toy-dynamo/pkg/metrics"
 	"github.com/tripab/toy-dynamo/pkg/replication"
 	"github.com/tripab/toy-dynamo/pkg/versioning"
 )
@@ -13,6 +14,7 @@ import (
 type Coordinator struct {
 	node     *Node
 	selector *CoordinatorSelector
+	metrics  *metrics.Collector
 }
 
 func NewCoordinator(node *Node) *Coordinator {
@@ -26,11 +28,19 @@ func (c *Coordinator) SetSelector(selector *CoordinatorSelector) {
 	c.selector = selector
 }
 
+// SetMetrics sets the metrics collector for request instrumentation.
+func (c *Coordinator) SetMetrics(m *metrics.Collector) {
+	c.metrics = m
+}
+
 // Get retrieves a value with quorum semantics
 func (c *Coordinator) Get(ctx context.Context, key string) (*GetResult, error) {
+	start := time.Now()
+
 	// 1. Determine preference list
 	preferenceList := c.node.ring.GetPreferenceList(key, c.node.config.N)
 	if len(preferenceList) == 0 {
+		c.recordRequest("get", "error", time.Since(start))
 		return nil, ErrNodeNotFound
 	}
 
@@ -68,17 +78,29 @@ func (c *Coordinator) Get(ctx context.Context, key string) (*GetResult, error) {
 				successCount++
 			}
 		case <-timeout:
+			elapsed := time.Since(start)
 			if successCount == 0 {
+				c.recordRequest("get", "timeout", elapsed)
+				c.recordQuorum("read", "failure")
 				return nil, ErrTimeout
 			}
+			c.recordRequest("get", "quorum_failed", elapsed)
+			c.recordQuorum("read", "failure")
 			return nil, ErrReadQuorumFailed
 		case <-ctx.Done():
+			c.recordRequest("get", "cancelled", time.Since(start))
+			c.recordQuorum("read", "failure")
 			return nil, ctx.Err()
 		}
 	}
 
 	// 4. Reconcile concurrent versions
 	concurrent := versioning.ReconcileConcurrent(allValues)
+
+	// Track divergent versions (more than 1 concurrent version)
+	if len(concurrent) > 1 && c.metrics != nil {
+		c.metrics.DivergentVersionsTotal.Inc()
+	}
 
 	result := &GetResult{
 		Values:  concurrent,
@@ -90,14 +112,20 @@ func (c *Coordinator) Get(ctx context.Context, key string) (*GetResult, error) {
 		go c.readRepair(key, concurrent, preferenceList)
 	}
 
+	c.recordRequest("get", "success", time.Since(start))
+	c.recordQuorum("read", "success")
+
 	return result, nil
 }
 
 // Put stores a value with quorum semantics
 func (c *Coordinator) Put(ctx context.Context, key string, value []byte, context *Context) error {
+	start := time.Now()
+
 	// 1. Determine preference list
 	preferenceList := c.node.ring.GetPreferenceList(key, c.node.config.N)
 	if len(preferenceList) == 0 {
+		c.recordRequest("put", "error", time.Since(start))
 		return ErrNodeNotFound
 	}
 
@@ -152,11 +180,18 @@ func (c *Coordinator) Put(ctx context.Context, key string, value []byte, context
 				failedNodes = append(failedNodes, resp.nodeID)
 			}
 		case <-timeout:
+			elapsed := time.Since(start)
 			if acks == 0 {
+				c.recordRequest("put", "timeout", elapsed)
+				c.recordQuorum("write", "failure")
 				return ErrTimeout
 			}
+			c.recordRequest("put", "quorum_failed", elapsed)
+			c.recordQuorum("write", "failure")
 			return ErrWriteQuorumFailed
 		case <-ctx.Done():
+			c.recordRequest("put", "cancelled", time.Since(start))
+			c.recordQuorum("write", "failure")
 			return ctx.Err()
 		}
 	}
@@ -166,14 +201,20 @@ func (c *Coordinator) Put(ctx context.Context, key string, value []byte, context
 		c.handleHintedHandoff(key, versioned, failedNodes, preferenceList)
 	}
 
+	c.recordRequest("put", "success", time.Since(start))
+	c.recordQuorum("write", "success")
+
 	return nil
 }
 
 // Delete removes a key by writing a tombstone
 func (c *Coordinator) Delete(ctx context.Context, key string, context *Context) error {
+	start := time.Now()
+
 	// 1. Determine preference list
 	preferenceList := c.node.ring.GetPreferenceList(key, c.node.config.N)
 	if len(preferenceList) == 0 {
+		c.recordRequest("delete", "error", time.Since(start))
 		return ErrNodeNotFound
 	}
 
@@ -230,11 +271,18 @@ func (c *Coordinator) Delete(ctx context.Context, key string, context *Context) 
 				failedNodes = append(failedNodes, resp.nodeID)
 			}
 		case <-timeout:
+			elapsed := time.Since(start)
 			if acks == 0 {
+				c.recordRequest("delete", "timeout", elapsed)
+				c.recordQuorum("write", "failure")
 				return ErrTimeout
 			}
+			c.recordRequest("delete", "quorum_failed", elapsed)
+			c.recordQuorum("write", "failure")
 			return ErrWriteQuorumFailed
 		case <-ctx.Done():
+			c.recordRequest("delete", "cancelled", time.Since(start))
+			c.recordQuorum("write", "failure")
 			return ctx.Err()
 		}
 	}
@@ -243,6 +291,9 @@ func (c *Coordinator) Delete(ctx context.Context, key string, context *Context) 
 	if c.node.config.HintedHandoffEnabled && len(failedNodes) > 0 {
 		c.handleHintedHandoff(key, tombstone, failedNodes, preferenceList)
 	}
+
+	c.recordRequest("delete", "success", time.Since(start))
+	c.recordQuorum("write", "success")
 
 	return nil
 }
@@ -318,6 +369,10 @@ func (c *Coordinator) writeToNode(nodeID string, key string, value versioning.Ve
 }
 
 func (c *Coordinator) readRepair(key string, latest []versioning.VersionedValue, preferenceList []string) {
+	if c.metrics != nil {
+		c.metrics.ReadRepairsTotal.Inc()
+	}
+
 	// Update replicas with stale data
 	// This runs asynchronously so don't block on errors
 	for _, nodeID := range preferenceList {
@@ -327,17 +382,19 @@ func (c *Coordinator) readRepair(key string, latest []versioning.VersionedValue,
 
 		current, err := c.readFromNode(nodeID, key)
 		if err != nil {
-			// Node might be unreachable - skip it
+			if c.metrics != nil {
+				c.metrics.ReadRepairsFailed.Inc()
+			}
 			continue
 		}
 
 		// Check if this node has stale data using vector clock comparison
 		if c.hasStaleData(current, latest) {
-			// Send each latest version to bring the replica up to date
-			// We send all latest versions because they might be concurrent
 			for _, v := range latest {
 				if err := c.writeToNode(nodeID, key, v); err != nil {
-					// Best effort - continue with other versions
+					if c.metrics != nil {
+						c.metrics.ReadRepairsFailed.Inc()
+					}
 					continue
 				}
 			}
@@ -428,6 +485,9 @@ func (c *Coordinator) handleHintedHandoff(key string, value versioning.Versioned
 				Timestamp: time.Now(),
 			}
 			c.node.hintedHoff.StoreHint(hintNode, hint)
+			if c.metrics != nil {
+				c.metrics.HintsStoredTotal.Inc()
+			}
 			healthyNodes = healthyNodes[1:] // Rotate
 		}
 	}
@@ -483,4 +543,22 @@ func (c *Coordinator) getAlivePreferenceList(key string) []string {
 	}
 
 	return filtered
+}
+
+// recordRequest records request latency and count metrics.
+func (c *Coordinator) recordRequest(op, status string, duration time.Duration) {
+	if c.metrics == nil {
+		return
+	}
+	seconds := duration.Seconds()
+	c.metrics.RequestDuration.Observe(seconds, "op", op)
+	c.metrics.RequestsTotal.Inc("op", op, "status", status)
+}
+
+// recordQuorum records quorum success/failure metrics.
+func (c *Coordinator) recordQuorum(qtype, result string) {
+	if c.metrics == nil {
+		return
+	}
+	c.metrics.QuorumTotal.Inc("type", qtype, "result", result)
 }

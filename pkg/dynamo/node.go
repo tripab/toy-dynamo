@@ -3,10 +3,12 @@ package dynamo
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"sync"
 	"time"
 
 	"github.com/tripab/toy-dynamo/pkg/membership"
+	"github.com/tripab/toy-dynamo/pkg/metrics"
 	"github.com/tripab/toy-dynamo/pkg/replication"
 	"github.com/tripab/toy-dynamo/pkg/ring"
 	"github.com/tripab/toy-dynamo/pkg/rpc"
@@ -42,6 +44,9 @@ type Node struct {
 
 	// Coordinator selection for latency-based routing
 	coordinatorSelector *CoordinatorSelector
+
+	// Metrics collection
+	metrics *metrics.Collector
 
 	stopCh  chan struct{}
 	stopped bool
@@ -128,6 +133,12 @@ func NewNode(id, address string, config *Config) (*Node, error) {
 		node.coordinator.SetSelector(node.coordinatorSelector)
 	}
 
+	// Initialize metrics collector
+	if config.MetricsEnabled {
+		node.metrics = metrics.NewCollector(id)
+		node.coordinator.SetMetrics(node.metrics)
+	}
+
 	return node, nil
 }
 
@@ -135,6 +146,11 @@ func NewNode(id, address string, config *Config) (*Node, error) {
 func (n *Node) Start() error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
+
+	// Register metrics endpoint before starting RPC server
+	if n.metrics != nil {
+		n.rpcServer.RegisterMetricsHandler(n.metricsHandler())
+	}
 
 	// Start RPC server first
 	if err := n.rpcServer.Start(); err != nil {
@@ -283,10 +299,14 @@ func (n *Node) gossipLoop() {
 		case <-ticker.C:
 			// Check admission control before gossiping
 			if n.admissionController != nil && !n.admissionController.AllowBackground() {
-				// Skip this gossip round due to high foreground latency
 				continue
 			}
+			start := time.Now()
 			n.membership.Gossip()
+			if n.metrics != nil {
+				n.metrics.GossipRoundsTotal.Inc()
+				n.metrics.GossipDuration.Observe(time.Since(start).Seconds())
+			}
 		case <-n.stopCh:
 			return
 		}
@@ -318,10 +338,17 @@ func (n *Node) antiEntropyLoop() {
 		case <-ticker.C:
 			// Check admission control before running anti-entropy
 			if n.admissionController != nil && !n.admissionController.AllowBackground() {
-				// Skip this anti-entropy round due to high foreground latency
+				if n.metrics != nil {
+					n.metrics.AntiEntropySyncsSkipped.Inc()
+				}
 				continue
 			}
+			start := time.Now()
 			n.antiEntropy.Run()
+			if n.metrics != nil {
+				n.metrics.AntiEntropySyncsTotal.Inc()
+				n.metrics.AntiEntropyDuration.Observe(time.Since(start).Seconds())
+			}
 		case <-n.stopCh:
 			return
 		}
@@ -426,6 +453,59 @@ func (n *Node) IsBackgroundThrottled() bool {
 // Returns nil if coordinator selection is disabled.
 func (n *Node) GetCoordinatorSelector() *CoordinatorSelector {
 	return n.coordinatorSelector
+}
+
+// GetMetrics returns the metrics collector for this node.
+// Returns nil if metrics are disabled.
+func (n *Node) GetMetrics() *metrics.Collector {
+	return n.metrics
+}
+
+// collectGaugeMetrics updates gauge-type metrics that are snapshots of current state.
+// Called by the metrics handler on each scrape via the collector's Render().
+func (n *Node) collectGaugeMetrics() {
+	if n.metrics == nil {
+		return
+	}
+
+	// Hint queue sizes
+	hintCounts := n.hintedHoff.GetHintCounts()
+	for nodeID, count := range hintCounts {
+		n.metrics.HintsPending.Set(float64(count), "target", nodeID)
+	}
+
+	// Cluster member counts by status
+	members := n.membership.GetAllMembers()
+	alive, suspected, dead := 0, 0, 0
+	for _, m := range members {
+		switch m.Status {
+		case membership.StatusAlive:
+			alive++
+		case membership.StatusSuspected:
+			suspected++
+		case membership.StatusDead:
+			dead++
+		}
+	}
+	n.metrics.ClusterMemberCount.Set(float64(alive), "status", "alive")
+	n.metrics.ClusterMemberCount.Set(float64(suspected), "status", "suspected")
+	n.metrics.ClusterMemberCount.Set(float64(dead), "status", "dead")
+
+	// Background throttle status
+	if n.admissionController != nil && n.admissionController.ShouldThrottle() {
+		n.metrics.BackgroundThrottled.Set(1)
+	} else {
+		n.metrics.BackgroundThrottled.Set(0)
+	}
+}
+
+// metricsHandler returns an HTTP handler that collects gauge metrics on each
+// scrape and then renders all metrics in Prometheus text exposition format.
+func (n *Node) metricsHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		n.collectGaugeMetrics()
+		n.metrics.Handler()(w, r)
+	}
 }
 
 // NodeOperations interface implementation for RPC server
