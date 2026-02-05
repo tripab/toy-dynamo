@@ -56,6 +56,11 @@ func (s *Server) registerHandlers() {
 	s.mux.HandleFunc("/health", s.handleHealth)
 }
 
+// RegisterMetricsHandler adds a /metrics endpoint with the given handler.
+func (s *Server) RegisterMetricsHandler(handler http.HandlerFunc) {
+	s.mux.HandleFunc("/metrics", handler)
+}
+
 // Start starts the RPC server
 func (s *Server) Start() error {
 	s.server = &http.Server{
