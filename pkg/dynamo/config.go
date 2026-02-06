@@ -99,6 +99,11 @@ type Config struct {
 
 	// CoordinatorSelectionWindowSize is the number of latency samples per node
 	CoordinatorSelectionWindowSize int
+
+	// Metrics settings
+
+	// MetricsEnabled enables the metrics collection and /metrics endpoint
+	MetricsEnabled bool
 }
 
 func DefaultConfig() *Config {
@@ -137,6 +142,8 @@ func DefaultConfig() *Config {
 		// Coordinator selection defaults
 		CoordinatorSelectionEnabled:    true,
 		CoordinatorSelectionWindowSize: 100,
+		// Metrics defaults
+		MetricsEnabled: true,
 	}
 }
 
@@ -173,3 +180,6 @@ func (c *Config) GetAdmissionWindowSize() int                 { return c.Admissi
 // Coordinator selection getters
 func (c *Config) GetCoordinatorSelectionEnabled() bool    { return c.CoordinatorSelectionEnabled }
 func (c *Config) GetCoordinatorSelectionWindowSize() int  { return c.CoordinatorSelectionWindowSize }
+
+// Metrics getter
+func (c *Config) GetMetricsEnabled() bool { return c.MetricsEnabled }

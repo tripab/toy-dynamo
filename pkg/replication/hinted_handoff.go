@@ -99,6 +99,32 @@ func (h *HintedHandoff) isNodeAlive(nodeID string) bool {
 	return member.Status == membership.StatusAlive
 }
 
+// GetHintCounts returns the number of pending hints per target node.
+func (h *HintedHandoff) GetHintCounts() map[string]int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	counts := make(map[string]int, len(h.hints))
+	for nodeID, hints := range h.hints {
+		if len(hints) > 0 {
+			counts[nodeID] = len(hints)
+		}
+	}
+	return counts
+}
+
+// GetTotalHintCount returns the total number of pending hints across all nodes.
+func (h *HintedHandoff) GetTotalHintCount() int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	total := 0
+	for _, hints := range h.hints {
+		total += len(hints)
+	}
+	return total
+}
+
 func (h *HintedHandoff) deliverHint(nodeID string, hint *Hint) bool {
 	// Check if RPC client is available
 	if h.rpcClient == nil {
