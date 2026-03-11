@@ -8,6 +8,7 @@ import (
 	"log"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // Handler is a function that processes an incoming Maelstrom message.
@@ -96,10 +97,13 @@ func (t *Transport) Reply(req Message, body any) error {
 	return t.sendRaw(msg)
 }
 
-// RPC sends a message and waits for a response with matching in_reply_to.
-// Returns the response message or an error if the context-free read loop
-// hasn't delivered a reply yet. Callers should set a timeout externally.
+// RPC sends a message and blocks until a response arrives or timeout expires.
 func (t *Transport) RPC(dest string, body any) (Message, error) {
+	return t.RPCWithTimeout(dest, body, 5*time.Second)
+}
+
+// RPCWithTimeout sends a message and waits for a response with a timeout.
+func (t *Transport) RPCWithTimeout(dest string, body any, timeout time.Duration) (Message, error) {
 	raw, err := json.Marshal(body)
 	if err != nil {
 		return Message{}, fmt.Errorf("marshal body: %w", err)
@@ -130,8 +134,15 @@ func (t *Transport) RPC(dest string, body any) (Message, error) {
 		return Message{}, err
 	}
 
-	resp := <-ch
-	return resp, nil
+	select {
+	case resp := <-ch:
+		return resp, nil
+	case <-time.After(timeout):
+		t.callbacksMu.Lock()
+		delete(t.callbacks, peek.MsgID)
+		t.callbacksMu.Unlock()
+		return Message{}, fmt.Errorf("RPC to %s timed out after %v", dest, timeout)
+	}
 }
 
 // Run reads messages from STDIN and dispatches them. Blocks until EOF.

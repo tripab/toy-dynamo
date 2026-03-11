@@ -408,6 +408,25 @@ func validateConfig(c *Config) error {
 	return nil
 }
 
+// SetRemoteReadWriter configures a pluggable transport for inter-node
+// communication, replacing the default HTTP RPC client. Used by the
+// Maelstrom adapter to route messages over STDIN/STDOUT.
+func (n *Node) SetRemoteReadWriter(rw RemoteReadWriter) {
+	n.coordinator.SetRemoteReadWriter(rw)
+}
+
+// InitRing adds a node to the consistent hash ring and returns its tokens.
+// This is used for lightweight topology setup without starting background loops.
+func (n *Node) InitRing(nodeID string, vnodes int) []uint32 {
+	return n.ring.AddNode(nodeID, vnodes)
+}
+
+// InitMember adds a member to the membership list.
+// This is used for lightweight topology setup without starting background loops.
+func (n *Node) InitMember(member *membership.Member) {
+	n.membership.AddMember(member)
+}
+
 // Getter methods to implement types.NodeInfo interface
 
 func (n *Node) GetID() string      { return n.id }

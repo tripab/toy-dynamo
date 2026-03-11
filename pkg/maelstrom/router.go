@@ -11,8 +11,8 @@ import (
 // LocalStore is called by the Router to handle incoming requests from other
 // nodes that need to read/write to local storage.
 type LocalStore interface {
-	Get(key string) ([]versioning.VersionedValue, error)
-	Put(key string, value versioning.VersionedValue) error
+	LocalGet(key string) ([]versioning.VersionedValue, error)
+	LocalPut(key string, value versioning.VersionedValue) error
 }
 
 // Router provides inter-node communication via Maelstrom message passing.
@@ -113,9 +113,9 @@ func (r *Router) RemoteHint(nodeID, originalNode, key string, value versioning.V
 	return respBody.Success, nil
 }
 
-// rpc sends a message and blocks until the reply arrives.
+// rpc sends a message and blocks until the reply arrives or timeout.
 func (r *Router) rpc(dest string, body any) (Message, error) {
-	return r.transport.RPC(dest, body)
+	return r.transport.RPCWithTimeout(dest, body, r.timeout)
 }
 
 // --- Incoming message handlers ---
@@ -126,7 +126,7 @@ func (r *Router) handleInternalGet(msg Message) error {
 		return r.replyError(msg, body.MsgID, ErrorMalformedRequest, "bad get request")
 	}
 
-	values, err := r.store.Get(body.Key)
+	values, err := r.store.LocalGet(body.Key)
 	if err != nil {
 		// Return empty values rather than error — key-not-found is normal
 		values = nil
@@ -146,7 +146,7 @@ func (r *Router) handleInternalPut(msg Message) error {
 	}
 
 	value := toVersionedValue(body.Value)
-	err := r.store.Put(body.Key, value)
+	err := r.store.LocalPut(body.Key, value)
 
 	return r.transport.Reply(msg, InternalPutOKBody{
 		Type:      MsgTypeInternalPutOK,
@@ -162,7 +162,7 @@ func (r *Router) handleInternalHint(msg Message) error {
 	}
 
 	value := toVersionedValue(body.Value)
-	err := r.store.Put(body.Key, value)
+	err := r.store.LocalPut(body.Key, value)
 
 	return r.transport.Reply(msg, InternalHintOKBody{
 		Type:      MsgTypeInternalHintOK,

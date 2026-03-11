@@ -10,11 +10,19 @@ import (
 	"github.com/tripab/toy-dynamo/pkg/versioning"
 )
 
+// RemoteReadWriter abstracts remote node communication so the coordinator
+// can work with different transports (HTTP RPC, Maelstrom STDIO, etc.).
+type RemoteReadWriter interface {
+	ReadFromRemote(nodeID, key string) ([]versioning.VersionedValue, error)
+	WriteToRemote(nodeID, key string, value versioning.VersionedValue) error
+}
+
 // Coordinator manages request coordination with state machine approach
 type Coordinator struct {
-	node     *Node
-	selector *CoordinatorSelector
-	metrics  *metrics.Collector
+	node      *Node
+	selector  *CoordinatorSelector
+	metrics   *metrics.Collector
+	remoteRW  RemoteReadWriter
 }
 
 func NewCoordinator(node *Node) *Coordinator {
@@ -31,6 +39,12 @@ func (c *Coordinator) SetSelector(selector *CoordinatorSelector) {
 // SetMetrics sets the metrics collector for request instrumentation.
 func (c *Coordinator) SetMetrics(m *metrics.Collector) {
 	c.metrics = m
+}
+
+// SetRemoteReadWriter sets a pluggable transport for remote node operations.
+// When set, the coordinator uses this instead of the default HTTP RPC client.
+func (c *Coordinator) SetRemoteReadWriter(rw RemoteReadWriter) {
+	c.remoteRW = rw
 }
 
 // Get retrieves a value with quorum semantics
@@ -309,6 +323,16 @@ func (c *Coordinator) readFromNode(nodeID string, key string) ([]versioning.Vers
 		return values, err
 	}
 
+	// Pluggable remote transport (e.g. Maelstrom STDIO)
+	if c.remoteRW != nil {
+		start := time.Now()
+		values, err := c.remoteRW.ReadFromRemote(nodeID, key)
+		if c.selector != nil {
+			c.selector.RecordLatency(nodeID, time.Since(start))
+		}
+		return values, err
+	}
+
 	// Remote read via RPC
 	member := c.node.membership.GetMember(nodeID)
 	if member == nil || member.Status != membership.StatusAlive {
@@ -336,6 +360,16 @@ func (c *Coordinator) writeToNode(nodeID string, key string, value versioning.Ve
 		// Local write
 		start := time.Now()
 		err := c.node.storage.Put(key, value)
+		if c.selector != nil {
+			c.selector.RecordLatency(nodeID, time.Since(start))
+		}
+		return err
+	}
+
+	// Pluggable remote transport (e.g. Maelstrom STDIO)
+	if c.remoteRW != nil {
+		start := time.Now()
+		err := c.remoteRW.WriteToRemote(nodeID, key, value)
 		if c.selector != nil {
 			c.selector.RecordLatency(nodeID, time.Since(start))
 		}
