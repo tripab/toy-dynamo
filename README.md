@@ -255,6 +255,25 @@ go test -tags=integration ./tests/integration/...
 go test -bench=. ./tests/performance/...
 ```
 
+### Maelstrom Correctness Tests
+
+The project includes a [Maelstrom](https://github.com/jepsen-io/maelstrom) adapter that runs the real Dynamo node under Jepsen-style linearizability checking. The adapter replaces the HTTP RPC transport with Maelstrom's JSON-over-STDIO protocol while preserving all core logic: consistent hashing, quorum coordination, vector clock versioning, and reconciliation.
+
+```bash
+# Build the adapter binary
+go build -o bin/maelstrom-dynamo ./cmd/maelstrom/
+
+# Run a 3-node linearizability test
+./maelstrom/maelstrom test -w lin-kv \
+  --bin ./bin/maelstrom-dynamo \
+  --node-count 3 \
+  --time-limit 10 \
+  --rate 10 \
+  --concurrency 2n
+```
+
+Requires Java 11+ and Maelstrom v0.2.3 (see [MAELSTROM_GUIDE.md](MAELSTROM_GUIDE.md) for setup and detailed instructions).
+
 ## Project Structure
 
 ```
@@ -287,11 +306,19 @@ go test -bench=. ./tests/performance/...
 │   ├── sync/
 │   │   ├── merkle.go            # Merkle tree
 │   │   └── anti_entropy.go      # Anti-entropy protocol
-│   └── storage/
-│       ├── interface.go         # Storage engine interface
-│       ├── memory.go            # In-memory engine
-│       ├── boltdb.go            # BoltDB engine
-│       └── badger.go            # BadgerDB engine
+│   ├── storage/
+│   │   ├── interface.go         # Storage engine interface
+│   │   ├── memory.go            # In-memory engine
+│   │   ├── boltdb.go            # BoltDB engine
+│   │   └── badger.go            # BadgerDB engine
+│   └── maelstrom/
+│       ├── protocol.go          # Maelstrom message types
+│       ├── transport.go         # JSON-over-STDIO transport
+│       ├── router.go            # Inter-node message routing
+│       └── node.go              # Maelstrom-adapted Dynamo node
+├── cmd/
+│   └── maelstrom/
+│       └── main.go              # Maelstrom adapter binary
 ├── tests/
 │   ├── unit/                    # Unit tests
 │   ├── integration/             # Integration tests
