@@ -172,9 +172,13 @@ func (n *Node) handleWrite(msg Message) error {
 		return n.replyError(msg, body.MsgID, ErrorMalformedRequest, "bad value")
 	}
 
-	// Read current context for causal ordering.
+	// Best-effort read of current context for causal ordering.
+	// Use a short timeout so a slow/lossy network doesn't stall writes;
+	// if it fails, the write proceeds with a fresh vector clock.
 	var ctx *dynamo.Context
-	result, getErr := n.inner.Get(context.Background(), key)
+	readCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	result, getErr := n.inner.Get(readCtx, key)
+	cancel()
 	if getErr == nil && result != nil {
 		ctx = result.Context
 	}
