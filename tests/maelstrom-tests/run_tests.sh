@@ -11,6 +11,7 @@
 #   partition-5       5-node with network partitions
 #   lossy-3           3-node with message latency and loss
 #   lossy-5           5-node with message latency and loss
+#   convergence       5-node partition test (long) for convergence
 #   all               Run all tests sequentially
 #
 # If no test name is given, runs "lin-kv-3" as a quick smoke test.
@@ -157,6 +158,19 @@ test_lossy_5() {
         --latency 100
 }
 
+# Long-running partition test: writes during partitions, heals, verifies
+# that the linearizability checker passes (implying convergence via read repair).
+test_convergence() {
+    run_maelstrom "convergence" \
+        -w lin-kv \
+        --bin "$BIN" \
+        --node-count 5 \
+        --time-limit 120 \
+        --rate 5 \
+        --concurrency 2n \
+        --nemesis partition
+}
+
 # --- Main ---
 
 check_prerequisites
@@ -172,6 +186,7 @@ case "$TEST_NAME" in
     partition-5)  test_partition_5  || FAILURES=$((FAILURES + 1)) ;;
     lossy-3)      test_lossy_3     || FAILURES=$((FAILURES + 1)) ;;
     lossy-5)      test_lossy_5     || FAILURES=$((FAILURES + 1)) ;;
+    convergence)  test_convergence || FAILURES=$((FAILURES + 1)) ;;
     all)
         test_lin_kv_3     || FAILURES=$((FAILURES + 1))
         test_lin_kv_5     || FAILURES=$((FAILURES + 1))
@@ -179,10 +194,11 @@ case "$TEST_NAME" in
         test_partition_5  || FAILURES=$((FAILURES + 1))
         test_lossy_3      || FAILURES=$((FAILURES + 1))
         test_lossy_5      || FAILURES=$((FAILURES + 1))
+        test_convergence  || FAILURES=$((FAILURES + 1))
         ;;
     *)
         echo "Unknown test: $TEST_NAME"
-        echo "Available: lin-kv-3, lin-kv-5, partition-3, partition-5, lossy-3, lossy-5, all"
+        echo "Available: lin-kv-3, lin-kv-5, partition-3, partition-5, lossy-3, lossy-5, convergence, all"
         exit 1
         ;;
 esac
