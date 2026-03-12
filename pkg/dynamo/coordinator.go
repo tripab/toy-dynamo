@@ -7,6 +7,7 @@ import (
 	"github.com/tripab/toy-dynamo/pkg/membership"
 	"github.com/tripab/toy-dynamo/pkg/metrics"
 	"github.com/tripab/toy-dynamo/pkg/replication"
+	"github.com/tripab/toy-dynamo/pkg/storage"
 	"github.com/tripab/toy-dynamo/pkg/versioning"
 )
 
@@ -80,16 +81,29 @@ func (c *Coordinator) Get(ctx context.Context, key string) (*GetResult, error) {
 	}
 
 	// 3. Wait for R responses or timeout
+	// A node that responds successfully but with no data (key not found)
+	// still counts toward quorum — it is a valid response indicating
+	// the key does not exist on that replica.
 	allValues := make([]versioning.VersionedValue, 0)
 	successCount := 0
+	failCount := 0
 	timeout := time.After(c.node.config.RequestTimeout)
 
+quorumLoop:
 	for successCount < c.node.config.R {
 		select {
 		case resp := <-responses:
-			if resp.err == nil && len(resp.values) > 0 {
-				allValues = append(allValues, resp.values...)
+			if resp.err == nil {
 				successCount++
+				if len(resp.values) > 0 {
+					allValues = append(allValues, resp.values...)
+				}
+			} else {
+				failCount++
+			}
+			// All nodes responded — no point waiting further
+			if successCount+failCount >= len(preferenceList) {
+				break quorumLoop
 			}
 		case <-timeout:
 			elapsed := time.Since(start)
@@ -106,6 +120,13 @@ func (c *Coordinator) Get(ctx context.Context, key string) (*GetResult, error) {
 			c.recordQuorum("read", "failure")
 			return nil, ctx.Err()
 		}
+	}
+
+	// All nodes responded but quorum not met
+	if successCount < c.node.config.R {
+		c.recordRequest("get", "quorum_failed", time.Since(start))
+		c.recordQuorum("read", "failure")
+		return nil, ErrReadQuorumFailed
 	}
 
 	// 4. Reconcile concurrent versions
@@ -319,6 +340,11 @@ func (c *Coordinator) readFromNode(nodeID string, key string) ([]versioning.Vers
 		values, err := c.node.storage.Get(key)
 		if c.selector != nil {
 			c.selector.RecordLatency(nodeID, time.Since(start))
+		}
+		// Key not found is a valid empty response, not an error.
+		// This allows the coordinator to count it toward quorum.
+		if err == storage.ErrKeyNotFound {
+			return nil, nil
 		}
 		return values, err
 	}
