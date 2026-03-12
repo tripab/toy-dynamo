@@ -3,6 +3,7 @@ package maelstrom
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -141,7 +142,7 @@ func (n *Node) handleRead(msg Message) error {
 
 	result, err := n.inner.Get(context.Background(), key)
 	if err != nil {
-		return n.replyError(msg, body.MsgID, ErrorKeyNotFound, err.Error())
+		return n.replyError(msg, body.MsgID, kvErrorCode(err), err.Error())
 	}
 
 	if len(result.Values) == 0 {
@@ -201,7 +202,10 @@ func (n *Node) handleCAS(msg Message) error {
 
 	// Read current value.
 	result, err := n.inner.Get(context.Background(), key)
-	if err != nil || len(result.Values) == 0 {
+	if err != nil {
+		return n.replyError(msg, body.MsgID, kvErrorCode(err), err.Error())
+	}
+	if len(result.Values) == 0 {
 		return n.replyError(msg, body.MsgID, ErrorKeyNotFound, "key not found")
 	}
 
@@ -222,6 +226,20 @@ func (n *Node) handleCAS(msg Message) error {
 		Type:      MsgTypeCasOK,
 		InReplyTo: body.MsgID,
 	})
+}
+
+// kvErrorCode maps a Dynamo error to the appropriate Maelstrom error code.
+// Timeout and quorum failures return TemporarilyUnavailable so that the
+// linearizability checker treats them as indeterminate rather than as
+// "key not found" (which would be a false consistency violation during partitions).
+func kvErrorCode(err error) int {
+	if errors.Is(err, dynamo.ErrTimeout) ||
+		errors.Is(err, dynamo.ErrReadQuorumFailed) ||
+		errors.Is(err, dynamo.ErrWriteQuorumFailed) ||
+		errors.Is(err, dynamo.ErrNodeNotFound) {
+		return ErrorTemporarilyUnavail
+	}
+	return ErrorKeyNotFound
 }
 
 func (n *Node) replyError(msg Message, inReplyTo int, code int, text string) error {
