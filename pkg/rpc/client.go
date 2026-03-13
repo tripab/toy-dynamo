@@ -233,6 +233,27 @@ func (c *Client) DeliverHint(ctx context.Context, address string, originalNode, 
 	return &resp, nil
 }
 
+// StoreHint asks a remote node to store a hint for a failed node.
+// The remote node will deliver the hint when the target recovers.
+func (c *Client) StoreHint(ctx context.Context, address, targetNode, key string, value versioning.VersionedValue) (*StoreHintResponse, error) {
+	req := StoreHintRequest{
+		TargetNode: targetNode,
+		Key:        key,
+		Value:      FromVersionedValue(value),
+	}
+	var resp StoreHintResponse
+
+	if err := c.doRequest(ctx, address, "/rpc/store-hint", req, &resp); err != nil {
+		return nil, err
+	}
+
+	if resp.Error != "" {
+		return nil, fmt.Errorf("%w: %s", ErrServerError, resp.Error)
+	}
+
+	return &resp, nil
+}
+
 // Health checks if a remote node is healthy
 func (c *Client) Health(ctx context.Context, address string) error {
 	// Check circuit breaker first - but health checks should bypass it

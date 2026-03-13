@@ -621,9 +621,24 @@ func (n *Node) HandleSync(req *rpc.SyncRequest) *rpc.SyncResponse {
 	}
 }
 
-// HandleHint processes a hinted handoff delivery (implements rpc.NodeOperations)
+// HandleHint processes a hinted handoff delivery (implements rpc.NodeOperations).
+// The data goes directly into storage — this is called when a substitute node
+// delivers its stored hint to the recovered target node.
 func (n *Node) HandleHint(req *rpc.HintRequest) error {
-	// Store the hinted value locally
 	value := req.Value.ToVersionedValue()
 	return n.storage.Put(req.Key, value)
+}
+
+// HandleStoreHint stores a hint for a failed node (implements rpc.NodeOperations).
+// Per the Dynamo paper, this node is acting as a substitute: it holds the hint
+// in its local handoff queue and delivers it when the target node recovers.
+func (n *Node) HandleStoreHint(req *rpc.StoreHintRequest) error {
+	value := req.Value.ToVersionedValue()
+	hint := &replication.Hint{
+		ForNode:   req.TargetNode,
+		Key:       req.Key,
+		Value:     value,
+		Timestamp: time.Now(),
+	}
+	return n.hintedHoff.StoreHint(req.TargetNode, hint)
 }

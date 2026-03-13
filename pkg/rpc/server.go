@@ -21,8 +21,10 @@ type NodeOperations interface {
 	HandleGossip(members []MemberDTO) []MemberDTO
 	// HandleSync processes anti-entropy sync request
 	HandleSync(req *SyncRequest) *SyncResponse
-	// HandleHint processes a hinted handoff delivery
+	// HandleHint processes a hinted handoff delivery (data → storage)
 	HandleHint(req *HintRequest) error
+	// HandleStoreHint stores a hint for a failed node (hint → handoff queue)
+	HandleStoreHint(req *StoreHintRequest) error
 	// GetNodeID returns this node's ID
 	GetNodeID() string
 }
@@ -53,6 +55,7 @@ func (s *Server) registerHandlers() {
 	s.mux.HandleFunc("/rpc/gossip", s.handleGossip)
 	s.mux.HandleFunc("/rpc/sync", s.handleSync)
 	s.mux.HandleFunc("/rpc/hint", s.handleHint)
+	s.mux.HandleFunc("/rpc/store-hint", s.handleStoreHint)
 	s.mux.HandleFunc("/health", s.handleHealth)
 }
 
@@ -186,6 +189,27 @@ func (s *Server) handleHint(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.writeJSON(w, HintResponse{Success: true})
+}
+
+// handleStoreHint handles requests to store a hint for a failed node
+func (s *Server) handleStoreHint(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req StoreHintRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.writeJSON(w, StoreHintResponse{Success: false, Error: "invalid request: " + err.Error()})
+		return
+	}
+
+	if err := s.node.HandleStoreHint(&req); err != nil {
+		s.writeJSON(w, StoreHintResponse{Success: false, Error: err.Error()})
+		return
+	}
+
+	s.writeJSON(w, StoreHintResponse{Success: true})
 }
 
 // handleHealth handles health check requests

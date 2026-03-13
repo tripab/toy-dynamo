@@ -2,6 +2,7 @@ package dynamo
 
 import (
 	"context"
+	"slices"
 	"time"
 
 	"github.com/tripab/toy-dynamo/pkg/membership"
@@ -16,6 +17,13 @@ import (
 type RemoteReadWriter interface {
 	ReadFromRemote(nodeID, key string) ([]versioning.VersionedValue, error)
 	WriteToRemote(nodeID, key string, value versioning.VersionedValue) error
+}
+
+// RemoteHintStorer is an optional interface that RemoteReadWriter implementations
+// can provide for storing hints on substitute nodes. If not supported, the
+// coordinator falls back to the RPC client.
+type RemoteHintStorer interface {
+	StoreHintOnRemote(substituteNodeID, targetNode, key string, value versioning.VersionedValue) error
 }
 
 // Coordinator manages request coordination with state machine approach
@@ -519,38 +527,63 @@ func (c *Coordinator) buildContext(values []versioning.VersionedValue) *Context 
 func (c *Coordinator) handleHintedHandoff(key string, value versioning.VersionedValue,
 	failedNodes []string, preferenceList []string) {
 
-	// Find healthy nodes to store hints
+	// Find healthy nodes that can act as substitute hint holders.
 	healthyNodes := make([]string, 0)
 	for _, nodeID := range preferenceList {
-		isHealthy := true
-		for _, failed := range failedNodes {
-			if nodeID == failed {
-				isHealthy = false
-				break
-			}
-		}
-		if isHealthy {
+		if !slices.Contains(failedNodes, nodeID) {
 			healthyNodes = append(healthyNodes, nodeID)
 		}
 	}
 
-	// Store hints on healthy nodes
-	for _, failedNode := range failedNodes {
+	// Per the Dynamo paper: for each failed node, pick a healthy substitute
+	// to store the hint. The substitute holds it locally and delivers it
+	// when the failed node recovers.
+	for i, failedNode := range failedNodes {
+		// Round-robin across healthy nodes.
+		substituteNode := c.node.id // fallback: store on coordinator
 		if len(healthyNodes) > 0 {
-			hintNode := healthyNodes[0]
-			hint := &replication.Hint{
-				ForNode:   failedNode,
-				Key:       key,
-				Value:     value,
-				Timestamp: time.Now(),
-			}
-			c.node.hintedHoff.StoreHint(hintNode, hint)
-			if c.metrics != nil {
-				c.metrics.HintsStoredTotal.Inc()
-			}
-			healthyNodes = healthyNodes[1:] // Rotate
+			substituteNode = healthyNodes[i%len(healthyNodes)]
+		}
+
+		if err := c.storeHintOnNode(substituteNode, failedNode, key, value); err != nil {
+			// Best-effort: log but don't fail the write.
+			continue
+		}
+		if c.metrics != nil {
+			c.metrics.HintsStoredTotal.Inc()
 		}
 	}
+}
+
+// storeHintOnNode stores a hint on the given substitute node. If the substitute
+// is the local node, it stores directly; otherwise it sends an RPC.
+func (c *Coordinator) storeHintOnNode(substituteNode, targetNode, key string, value versioning.VersionedValue) error {
+	hint := &replication.Hint{
+		ForNode:   targetNode,
+		Key:       key,
+		Value:     value,
+		Timestamp: time.Now(),
+	}
+
+	// Local: store directly in our own handoff queue.
+	if substituteNode == c.node.id {
+		return c.node.hintedHoff.StoreHint(targetNode, hint)
+	}
+
+	// Pluggable remote transport (e.g. Maelstrom).
+	if hs, ok := c.remoteRW.(RemoteHintStorer); ok {
+		return hs.StoreHintOnRemote(substituteNode, targetNode, key, value)
+	}
+
+	// HTTP RPC path.
+	member := c.node.membership.GetMember(substituteNode)
+	if member == nil {
+		return ErrNodeNotFound
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), c.node.config.RequestTimeout)
+	defer cancel()
+	_, err := c.node.rpcClient.StoreHint(ctx, member.Address, targetNode, key, value)
+	return err
 }
 
 // getFilteredPreferenceList returns nodes that are not known to be dead

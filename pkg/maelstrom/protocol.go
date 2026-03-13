@@ -165,6 +165,22 @@ type InternalHintOKBody struct {
 	Success   bool   `json:"success"`
 }
 
+// InternalStoreHintBody asks a substitute node to store a hint for a failed node.
+type InternalStoreHintBody struct {
+	Type       string            `json:"type"`
+	MsgID      int               `json:"msg_id"`
+	TargetNode string            `json:"target_node"`
+	Key        string            `json:"key"`
+	Value      VersionedValueDTO `json:"value"`
+}
+
+// InternalStoreHintOKBody acknowledges that the hint was stored.
+type InternalStoreHintOKBody struct {
+	Type      string `json:"type"`
+	InReplyTo int    `json:"in_reply_to"`
+	Success   bool   `json:"success"`
+}
+
 // --- DTO types for serialization over Maelstrom ---
 
 // VersionedValueDTO is a JSON-serializable versioned value for Maelstrom transport.
@@ -204,6 +220,8 @@ const (
 	MsgTypeInternalPutOK    = "internal_put_ok"
 	MsgTypeInternalGossip   = "internal_gossip"
 	MsgTypeInternalGossipOK = "internal_gossip_ok"
-	MsgTypeInternalHint     = "internal_hint"
-	MsgTypeInternalHintOK   = "internal_hint_ok"
+	MsgTypeInternalHint          = "internal_hint"
+	MsgTypeInternalHintOK        = "internal_hint_ok"
+	MsgTypeInternalStoreHint     = "internal_store_hint"
+	MsgTypeInternalStoreHintOK   = "internal_store_hint_ok"
 )

@@ -56,7 +56,7 @@ type SyncResponse struct {
 	Error       string   `json:"error,omitempty"`
 }
 
-// HintRequest delivers a hinted handoff
+// HintRequest delivers a hinted handoff (data goes directly to storage)
 type HintRequest struct {
 	OriginalNode string            `json:"original_node"`
 	Key          string            `json:"key"`
@@ -65,6 +65,21 @@ type HintRequest struct {
 
 // HintResponse acknowledges hint delivery
 type HintResponse struct {
+	Success bool   `json:"success"`
+	Error   string `json:"error,omitempty"`
+}
+
+// StoreHintRequest asks a substitute node to hold a hint for a failed node.
+// Per the Dynamo paper, the substitute node stores the hint locally and
+// delivers it to the target node when it recovers.
+type StoreHintRequest struct {
+	TargetNode string            `json:"target_node"`
+	Key        string            `json:"key"`
+	Value      VersionedValueDTO `json:"value"`
+}
+
+// StoreHintResponse acknowledges that the hint was stored.
+type StoreHintResponse struct {
 	Success bool   `json:"success"`
 	Error   string `json:"error,omitempty"`
 }

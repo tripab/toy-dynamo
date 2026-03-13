@@ -89,6 +89,33 @@ func (r *Router) RemotePut(nodeID, key string, value versioning.VersionedValue) 
 	return respBody.Success, nil
 }
 
+// RemoteStoreHint asks a remote substitute node to store a hint for a failed node.
+func (r *Router) RemoteStoreHint(substituteNodeID, targetNode, key string, value versioning.VersionedValue) error {
+	msgID := r.transport.NextMsgID()
+	body := InternalStoreHintBody{
+		Type:       MsgTypeInternalStoreHint,
+		MsgID:      msgID,
+		TargetNode: targetNode,
+		Key:        key,
+		Value:      fromVersionedValue(value),
+	}
+
+	resp, err := r.rpc(substituteNodeID, body)
+	if err != nil {
+		return fmt.Errorf("remote store-hint to %s: %w", substituteNodeID, err)
+	}
+
+	var respBody InternalStoreHintOKBody
+	if err := json.Unmarshal(resp.Body, &respBody); err != nil {
+		return fmt.Errorf("unmarshal store-hint response: %w", err)
+	}
+
+	if !respBody.Success {
+		return fmt.Errorf("store-hint on %s failed", substituteNodeID)
+	}
+	return nil
+}
+
 // RemoteHint delivers a hinted handoff to a remote node.
 func (r *Router) RemoteHint(nodeID, originalNode, key string, value versioning.VersionedValue) (bool, error) {
 	msgID := r.transport.NextMsgID()
