@@ -5,6 +5,8 @@
 #   ./tests/maelstrom/run_tests.sh [test-name]
 #
 # Available tests:
+#   smoke             Single-node adapter/protocol smoke test
+#   read-your-writes  3-node RYW verification via linearizability checker
 #   lin-kv-3          3-node linearizability (R=2, W=2, N=3)
 #   lin-kv-5          5-node linearizability
 #   partition-3       3-node with network partitions
@@ -104,6 +106,28 @@ test_lin_kv_3() {
         --concurrency 2n
 }
 
+test_smoke() {
+    run_maelstrom "smoke" \
+        -w lin-kv \
+        --bin "$BIN" \
+        --node-count 1 \
+        --time-limit 10 \
+        --rate 10 \
+        --concurrency 2n
+}
+
+# Maelstrom's lin-kv checker verifies linearizability, which implies
+# read-your-writes. R=2, W=2, N=3 is configured by the adapter for this cluster.
+test_read_your_writes() {
+    run_maelstrom "read-your-writes" \
+        -w lin-kv \
+        --bin "$BIN" \
+        --node-count 3 \
+        --time-limit 30 \
+        --rate 10 \
+        --concurrency 2n
+}
+
 test_lin_kv_5() {
     run_maelstrom "lin-kv-5" \
         -w lin-kv \
@@ -180,6 +204,8 @@ TEST_NAME="${1:-lin-kv-3}"
 FAILURES=0
 
 case "$TEST_NAME" in
+    smoke)        test_smoke        || FAILURES=$((FAILURES + 1)) ;;
+    read-your-writes) test_read_your_writes || FAILURES=$((FAILURES + 1)) ;;
     lin-kv-3)     test_lin_kv_3     || FAILURES=$((FAILURES + 1)) ;;
     lin-kv-5)     test_lin_kv_5     || FAILURES=$((FAILURES + 1)) ;;
     partition-3)  test_partition_3  || FAILURES=$((FAILURES + 1)) ;;
@@ -188,6 +214,8 @@ case "$TEST_NAME" in
     lossy-5)      test_lossy_5     || FAILURES=$((FAILURES + 1)) ;;
     convergence)  test_convergence || FAILURES=$((FAILURES + 1)) ;;
     all)
+        test_smoke        || FAILURES=$((FAILURES + 1))
+        test_read_your_writes || FAILURES=$((FAILURES + 1))
         test_lin_kv_3     || FAILURES=$((FAILURES + 1))
         test_lin_kv_5     || FAILURES=$((FAILURES + 1))
         test_partition_3  || FAILURES=$((FAILURES + 1))
@@ -198,7 +226,7 @@ case "$TEST_NAME" in
         ;;
     *)
         echo "Unknown test: $TEST_NAME"
-        echo "Available: lin-kv-3, lin-kv-5, partition-3, partition-5, lossy-3, lossy-5, convergence, all"
+        echo "Available: smoke, read-your-writes, lin-kv-3, lin-kv-5, partition-3, partition-5, lossy-3, lossy-5, convergence, all"
         exit 1
         ;;
 esac
