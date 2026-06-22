@@ -1,5 +1,9 @@
 # Maelstrom Testing Guide
 
+> For the current test profiles, CI workflow, artifact layout, adapter
+> architecture, and extension guide, see [TESTING.md](TESTING.md). This file is
+> retained as a compact command reference.
+
 This guide covers how to build and run the Maelstrom correctness tests for Toy Dynamo.
 
 ## Prerequisites
@@ -113,4 +117,7 @@ pkg/versioning/               -- vector clocks, reconciliation
 pkg/storage/                  -- in-memory storage engine
 ```
 
-The coordinator's `RemoteReadWriter` interface allows plugging the Maelstrom router in place of HTTP RPC. All quorum logic, vector clock versioning, reconciliation, and read repair run exactly as they would in production.
+The coordinator uses the shared `transport.Transport` interface, with the
+Maelstrom peer transport plugged in instead of the HTTP peer client. All quorum
+logic, vector clock versioning, reconciliation, and read repair run exactly as
+they would in production.

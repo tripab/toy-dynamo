@@ -242,12 +242,12 @@ config := &dynamo.Config{
 
 ### Unit Tests
 ```bash
-go test ./...
+go test ./pkg/... ./cmd/... ./tests/unit/...
 ```
 
 ### Integration Tests
 ```bash
-go test -tags=integration ./tests/integration/...
+go test ./tests/integration/...
 ```
 
 ### Performance Tests
@@ -272,7 +272,10 @@ go build -o bin/maelstrom-dynamo ./cmd/maelstrom/
   --concurrency 2n
 ```
 
-Requires Java 11+ and Maelstrom v0.2.3 (see [MAELSTROM_GUIDE.md](MAELSTROM_GUIDE.md) for setup and detailed instructions).
+Requires Java 11+ and Maelstrom v0.2.3. See [TESTING.md](TESTING.md)
+for local profiles, CI artifacts, result interpretation, and workload extension
+instructions. [MAELSTROM_GUIDE.md](MAELSTROM_GUIDE.md) remains a compact
+command reference.
 
 ## Project Structure
 
