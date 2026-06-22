@@ -43,3 +43,12 @@ jobs:
 
       - name: Run bounded Maelstrom suite
         run: ./tests/maelstrom-tests/run_tests.sh ci
+
+      - name: Archive Maelstrom reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: maelstrom-results-${{ github.run_id }}
+          path: store/
+          if-no-files-found: error
+          retention-days: 14
