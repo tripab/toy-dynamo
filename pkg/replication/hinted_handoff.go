@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/tripab/toy-dynamo/pkg/membership"
-	"github.com/tripab/toy-dynamo/pkg/rpc"
+	"github.com/tripab/toy-dynamo/pkg/peer"
 	"github.com/tripab/toy-dynamo/pkg/types"
 	"github.com/tripab/toy-dynamo/pkg/versioning"
 )
@@ -17,7 +17,7 @@ type HintedHandoff struct {
 	membership *membership.Membership
 	storage    types.Storage
 	config     types.Config
-	rpcClient  *rpc.Client
+	peerClient *peer.Client
 	hints      map[string][]*Hint
 	mu         sync.RWMutex
 }
@@ -41,11 +41,11 @@ func NewHintedHandoff(nodeInfo types.NodeInfo, membershipMgr *membership.Members
 	}
 }
 
-// SetRPCClient sets the RPC client for hint delivery
-func (h *HintedHandoff) SetRPCClient(client *rpc.Client) {
+// SetPeerClient sets the client for hint delivery.
+func (h *HintedHandoff) SetPeerClient(client *peer.Client) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.rpcClient = client
+	h.peerClient = client
 }
 
 // StoreHint stores a hint for later delivery
@@ -126,8 +126,8 @@ func (h *HintedHandoff) GetTotalHintCount() int {
 }
 
 func (h *HintedHandoff) deliverHint(nodeID string, hint *Hint) bool {
-	// Check if RPC client is available
-	if h.rpcClient == nil {
+	// Check if peer client is available
+	if h.peerClient == nil {
 		return false
 	}
 
@@ -141,8 +141,8 @@ func (h *HintedHandoff) deliverHint(nodeID string, hint *Hint) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), h.config.GetRequestTimeout())
 	defer cancel()
 
-	// Deliver hint via RPC
-	resp, err := h.rpcClient.DeliverHint(ctx, member.Address, h.nodeInfo.GetID(), hint.Key, hint.Value)
+	// Deliver hint via the configured peer transport.
+	resp, err := h.peerClient.DeliverHint(ctx, member.Address, h.nodeInfo.GetID(), hint.Key, hint.Value)
 	if err != nil {
 		// Delivery failed - hint will be retried later
 		return false

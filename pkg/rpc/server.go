@@ -8,11 +8,14 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/tripab/toy-dynamo/pkg/transport"
 	"github.com/tripab/toy-dynamo/pkg/versioning"
 )
 
 // NodeOperations defines the operations a node must implement to handle RPC requests
 type NodeOperations interface {
+	// HandleMessage processes an opaque transport message.
+	HandleMessage(ctx context.Context, msg transport.Message) (transport.Message, error)
 	// LocalGet retrieves values from local storage
 	LocalGet(key string) ([]versioning.VersionedValue, error)
 	// LocalPut stores a value in local storage
@@ -50,6 +53,7 @@ func NewServer(address string, node NodeOperations) *Server {
 
 // registerHandlers sets up the HTTP routes
 func (s *Server) registerHandlers() {
+	s.mux.HandleFunc("/rpc/message", s.handleMessage)
 	s.mux.HandleFunc("/rpc/get", s.handleGet)
 	s.mux.HandleFunc("/rpc/put", s.handlePut)
 	s.mux.HandleFunc("/rpc/gossip", s.handleGossip)
@@ -57,6 +61,27 @@ func (s *Server) registerHandlers() {
 	s.mux.HandleFunc("/rpc/hint", s.handleHint)
 	s.mux.HandleFunc("/rpc/store-hint", s.handleStoreHint)
 	s.mux.HandleFunc("/health", s.handleHealth)
+}
+
+// handleMessage handles opaque peer messages.
+func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req transport.Message
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	resp, err := s.node.HandleMessage(r.Context(), req)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.writeJSON(w, resp)
 }
 
 // RegisterMetricsHandler adds a /metrics endpoint with the given handler.

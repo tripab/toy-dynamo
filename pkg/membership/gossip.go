@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tripab/toy-dynamo/pkg/rpc"
+	"github.com/tripab/toy-dynamo/pkg/peer"
 	"github.com/tripab/toy-dynamo/pkg/types"
 )
 
@@ -17,7 +17,7 @@ type Membership struct {
 	address         string
 	members         map[string]*Member
 	config          types.Config
-	rpcClient       *rpc.Client
+	peerClient      *peer.Client
 	failureDetector *FailureDetector
 	mu              sync.RWMutex
 }
@@ -51,17 +51,17 @@ const (
 // NewMembership creates a new Membership with typed config
 func NewMembership(nodeID, address string, config types.Config) *Membership {
 	return &Membership{
-		localID:   nodeID,
-		address:   address,
-		members:   make(map[string]*Member),
-		config:    config,
-		rpcClient: nil, // Set via SetRPCClient after initialization
+		localID:    nodeID,
+		address:    address,
+		members:    make(map[string]*Member),
+		config:     config,
+		peerClient: nil,
 	}
 }
 
-// SetRPCClient sets the RPC client for network communication
-func (m *Membership) SetRPCClient(client *rpc.Client) {
-	m.rpcClient = client
+// SetPeerClient sets the client used for peer membership exchange.
+func (m *Membership) SetPeerClient(client *peer.Client) {
+	m.peerClient = client
 }
 
 // SetFailureDetector sets the failure detector for heartbeat recording
@@ -142,7 +142,7 @@ func (m *Membership) selectRandomPeer() string {
 }
 
 func (m *Membership) gossipWith(peerID string) {
-	if m.rpcClient == nil {
+	if m.peerClient == nil {
 		return
 	}
 
@@ -162,7 +162,7 @@ func (m *Membership) gossipWith(peerID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), m.config.GetRequestTimeout())
 	defer cancel()
 
-	resp, err := m.rpcClient.Gossip(ctx, peerAddress, m.localID, memberDTOs)
+	resp, err := m.peerClient.Gossip(ctx, peerAddress, m.localID, memberDTOs)
 	if err != nil {
 		// Peer might be down - failure detector will handle it
 		return
@@ -174,8 +174,8 @@ func (m *Membership) gossipWith(peerID string) {
 
 // SyncWithSeed contacts a seed node to get membership
 func (m *Membership) SyncWithSeed(seedAddress string) ([]*Member, error) {
-	if m.rpcClient == nil {
-		return nil, fmt.Errorf("RPC client not initialized")
+	if m.peerClient == nil {
+		return nil, fmt.Errorf("peer client not initialized")
 	}
 
 	// Build our membership list (just ourselves initially)
@@ -187,7 +187,7 @@ func (m *Membership) SyncWithSeed(seedAddress string) ([]*Member, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), m.config.GetRequestTimeout())
 	defer cancel()
 
-	resp, err := m.rpcClient.Gossip(ctx, seedAddress, m.localID, memberDTOs)
+	resp, err := m.peerClient.Gossip(ctx, seedAddress, m.localID, memberDTOs)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sync with seed %s: %w", seedAddress, err)
 	}
@@ -205,11 +205,11 @@ func (m *Membership) SyncWithSeed(seedAddress string) ([]*Member, error) {
 	return members, nil
 }
 
-// buildMemberDTOs converts local members to DTOs for RPC
-func (m *Membership) buildMemberDTOs() []rpc.MemberDTO {
-	dtos := make([]rpc.MemberDTO, 0, len(m.members))
+// buildMemberDTOs converts local members to DTOs for peer exchange.
+func (m *Membership) buildMemberDTOs() []peer.MemberDTO {
+	dtos := make([]peer.MemberDTO, 0, len(m.members))
 	for _, member := range m.members {
-		dtos = append(dtos, rpc.MemberDTO{
+		dtos = append(dtos, peer.MemberDTO{
 			NodeID:    member.NodeID,
 			Address:   member.Address,
 			Status:    int(member.Status),
@@ -222,7 +222,7 @@ func (m *Membership) buildMemberDTOs() []rpc.MemberDTO {
 }
 
 // mergeMembers merges received membership information
-func (m *Membership) mergeMembers(members []rpc.MemberDTO) {
+func (m *Membership) mergeMembers(members []peer.MemberDTO) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 

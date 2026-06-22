@@ -12,26 +12,11 @@ import (
 	"github.com/tripab/toy-dynamo/pkg/versioning"
 )
 
-// RemoteReadWriter abstracts remote node communication so the coordinator
-// can work with different transports (HTTP RPC, Maelstrom STDIO, etc.).
-type RemoteReadWriter interface {
-	ReadFromRemote(nodeID, key string) ([]versioning.VersionedValue, error)
-	WriteToRemote(nodeID, key string, value versioning.VersionedValue) error
-}
-
-// RemoteHintStorer is an optional interface that RemoteReadWriter implementations
-// can provide for storing hints on substitute nodes. If not supported, the
-// coordinator falls back to the RPC client.
-type RemoteHintStorer interface {
-	StoreHintOnRemote(substituteNodeID, targetNode, key string, value versioning.VersionedValue) error
-}
-
 // Coordinator manages request coordination with state machine approach
 type Coordinator struct {
-	node      *Node
-	selector  *CoordinatorSelector
-	metrics   *metrics.Collector
-	remoteRW  RemoteReadWriter
+	node     *Node
+	selector *CoordinatorSelector
+	metrics  *metrics.Collector
 }
 
 func NewCoordinator(node *Node) *Coordinator {
@@ -48,12 +33,6 @@ func (c *Coordinator) SetSelector(selector *CoordinatorSelector) {
 // SetMetrics sets the metrics collector for request instrumentation.
 func (c *Coordinator) SetMetrics(m *metrics.Collector) {
 	c.metrics = m
-}
-
-// SetRemoteReadWriter sets a pluggable transport for remote node operations.
-// When set, the coordinator uses this instead of the default HTTP RPC client.
-func (c *Coordinator) SetRemoteReadWriter(rw RemoteReadWriter) {
-	c.remoteRW = rw
 }
 
 // Get retrieves a value with quorum semantics
@@ -357,28 +336,16 @@ func (c *Coordinator) readFromNode(nodeID string, key string) ([]versioning.Vers
 		return values, err
 	}
 
-	// Pluggable remote transport (e.g. Maelstrom STDIO)
-	if c.remoteRW != nil {
-		start := time.Now()
-		values, err := c.remoteRW.ReadFromRemote(nodeID, key)
-		if c.selector != nil {
-			c.selector.RecordLatency(nodeID, time.Since(start))
-		}
-		return values, err
-	}
-
-	// Remote read via RPC
 	member := c.node.membership.GetMember(nodeID)
 	if member == nil || member.Status != membership.StatusAlive {
 		return nil, ErrNodeNotFound
 	}
 
-	// Use RPC client to read from remote node
 	ctx, cancel := context.WithTimeout(context.Background(), c.node.config.RequestTimeout)
 	defer cancel()
 
 	start := time.Now()
-	values, err := c.node.rpcClient.GetValues(ctx, member.Address, key)
+	values, err := c.node.peerClient.GetValues(ctx, member.Address, key)
 	if c.selector != nil {
 		c.selector.RecordLatency(nodeID, time.Since(start))
 	}
@@ -400,28 +367,16 @@ func (c *Coordinator) writeToNode(nodeID string, key string, value versioning.Ve
 		return err
 	}
 
-	// Pluggable remote transport (e.g. Maelstrom STDIO)
-	if c.remoteRW != nil {
-		start := time.Now()
-		err := c.remoteRW.WriteToRemote(nodeID, key, value)
-		if c.selector != nil {
-			c.selector.RecordLatency(nodeID, time.Since(start))
-		}
-		return err
-	}
-
-	// Remote write via RPC
 	member := c.node.membership.GetMember(nodeID)
 	if member == nil || member.Status != membership.StatusAlive {
 		return ErrNodeNotFound
 	}
 
-	// Use RPC client to write to remote node
 	ctx, cancel := context.WithTimeout(context.Background(), c.node.config.RequestTimeout)
 	defer cancel()
 
 	start := time.Now()
-	resp, err := c.node.rpcClient.Put(ctx, member.Address, key, value)
+	resp, err := c.node.peerClient.Put(ctx, member.Address, key, value)
 	if c.selector != nil {
 		c.selector.RecordLatency(nodeID, time.Since(start))
 	}
@@ -570,19 +525,13 @@ func (c *Coordinator) storeHintOnNode(substituteNode, targetNode, key string, va
 		return c.node.hintedHoff.StoreHint(targetNode, hint)
 	}
 
-	// Pluggable remote transport (e.g. Maelstrom).
-	if hs, ok := c.remoteRW.(RemoteHintStorer); ok {
-		return hs.StoreHintOnRemote(substituteNode, targetNode, key, value)
-	}
-
-	// HTTP RPC path.
 	member := c.node.membership.GetMember(substituteNode)
 	if member == nil {
 		return ErrNodeNotFound
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), c.node.config.RequestTimeout)
 	defer cancel()
-	_, err := c.node.rpcClient.StoreHint(ctx, member.Address, targetNode, key, value)
+	_, err := c.node.peerClient.StoreHint(ctx, member.Address, targetNode, key, value)
 	return err
 }
 

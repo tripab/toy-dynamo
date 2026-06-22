@@ -2,6 +2,7 @@ package dynamo
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"sync"
@@ -9,11 +10,13 @@ import (
 
 	"github.com/tripab/toy-dynamo/pkg/membership"
 	"github.com/tripab/toy-dynamo/pkg/metrics"
+	"github.com/tripab/toy-dynamo/pkg/peer"
 	"github.com/tripab/toy-dynamo/pkg/replication"
 	"github.com/tripab/toy-dynamo/pkg/ring"
 	"github.com/tripab/toy-dynamo/pkg/rpc"
 	"github.com/tripab/toy-dynamo/pkg/storage"
 	"github.com/tripab/toy-dynamo/pkg/synchronization"
+	"github.com/tripab/toy-dynamo/pkg/transport"
 	"github.com/tripab/toy-dynamo/pkg/versioning"
 )
 
@@ -32,9 +35,9 @@ type Node struct {
 	hintedHoff   *replication.HintedHandoff
 	failDetector *membership.FailureDetector
 
-	// RPC components for inter-node communication
-	rpcClient *rpc.Client
-	rpcServer *rpc.Server
+	transport  transport.Transport
+	peerClient *peer.Client
+	rpcServer  *rpc.Server
 
 	// Tombstone compaction
 	tombstoneCompactor *storage.TombstoneCompactor
@@ -93,21 +96,24 @@ func NewNode(id, address string, config *Config) (*Node, error) {
 	node.hintedHoff = replication.NewHintedHandoff(node, node.membership, node.storage, config)
 	node.antiEntropy = synchronization.NewAntiEntropy(id, node.storage, node.ring, node.membership, config)
 
-	// Initialize RPC client and server
-	node.rpcClient = rpc.NewClient(config.RequestTimeout)
-	node.rpcServer = rpc.NewServer(address, node)
+	node.transport = config.Transport
+	if node.transport == nil {
+		node.transport = newDefaultHTTPTransport(config)
+	}
+	node.peerClient = peer.NewClient(node.transport)
+	if !config.DisableHTTPServer {
+		node.rpcServer = rpc.NewServer(address, node)
+	}
 
-	// Set RPC client on membership for gossip
-	node.membership.SetRPCClient(node.rpcClient)
+	// Set peer client on components that communicate with remote nodes.
+	node.membership.SetPeerClient(node.peerClient)
 
 	// Set failure detector on membership for heartbeat recording
 	node.membership.SetFailureDetector(node.failDetector)
 
-	// Set RPC client on hinted handoff for hint delivery
-	node.hintedHoff.SetRPCClient(node.rpcClient)
+	node.hintedHoff.SetPeerClient(node.peerClient)
 
-	// Set RPC client on anti-entropy for replica synchronization
-	node.antiEntropy.SetRPCClient(node.rpcClient)
+	node.antiEntropy.SetPeerClient(node.peerClient)
 
 	// Initialize tombstone compactor for memory storage
 	// LSS storage has its own built-in compactor
@@ -147,14 +153,15 @@ func (n *Node) Start() error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
-	// Register metrics endpoint before starting RPC server
-	if n.metrics != nil {
+	// Register metrics endpoint before starting the default HTTP server.
+	if n.metrics != nil && n.rpcServer != nil {
 		n.rpcServer.RegisterMetricsHandler(n.metricsHandler())
 	}
 
-	// Start RPC server first
-	if err := n.rpcServer.Start(); err != nil {
-		return fmt.Errorf("failed to start RPC server: %w", err)
+	if n.rpcServer != nil {
+		if err := n.rpcServer.Start(); err != nil {
+			return fmt.Errorf("failed to start RPC server: %w", err)
+		}
 	}
 
 	// Add self to ring
@@ -208,16 +215,18 @@ func (n *Node) Stop() error {
 
 	n.wg.Wait()
 
-	// Stop RPC server
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := n.rpcServer.Stop(ctx); err != nil {
-		// Log but don't fail
-		fmt.Printf("Warning: RPC server shutdown error: %v\n", err)
+	if n.rpcServer != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := n.rpcServer.Stop(ctx); err != nil {
+			// Log but don't fail
+			fmt.Printf("Warning: RPC server shutdown error: %v\n", err)
+		}
 	}
 
-	// Close RPC client
-	n.rpcClient.Close()
+	if n.peerClient != nil {
+		n.peerClient.Close()
+	}
 
 	return n.storage.Close()
 }
@@ -408,11 +417,34 @@ func validateConfig(c *Config) error {
 	return nil
 }
 
-// SetRemoteReadWriter configures a pluggable transport for inter-node
-// communication, replacing the default HTTP RPC client. Used by the
-// Maelstrom adapter to route messages over STDIN/STDOUT.
-func (n *Node) SetRemoteReadWriter(rw RemoteReadWriter) {
-	n.coordinator.SetRemoteReadWriter(rw)
+func newDefaultHTTPTransport(config *Config) transport.Transport {
+	rpcConfig := rpc.DefaultClientConfig()
+	rpcConfig.Timeout = config.RequestTimeout
+	rpcConfig.EnableCircuitBreaker = config.EnableCircuitBreaker
+	rpcConfig.EnableRetry = config.EnableRetry
+	if rpcConfig.PoolConfig != nil {
+		rpcConfig.PoolConfig.ConnTimeout = config.RequestTimeout
+	}
+	if rpcConfig.RetryConfig != nil {
+		rpcConfig.RetryConfig.MaxRetries = config.MaxRetries
+		rpcConfig.RetryConfig.InitialBackoff = config.InitialRetryBackoff
+		rpcConfig.RetryConfig.MaxBackoff = config.MaxRetryBackoff
+		rpcConfig.RetryConfig.BackoffMultiplier = config.RetryBackoffMultiplier
+	}
+	if rpcConfig.CircuitBreakerConfig != nil {
+		rpcConfig.CircuitBreakerConfig.FailureThreshold = config.CircuitBreakerThreshold
+		rpcConfig.CircuitBreakerConfig.ResetTimeout = config.CircuitBreakerResetTimeout
+	}
+	return rpc.NewClientWithConfig(rpcConfig)
+}
+
+// SetTransport replaces the outbound inter-node transport at runtime.
+func (n *Node) SetTransport(t transport.Transport) {
+	n.transport = t
+	n.peerClient = peer.NewClient(t)
+	n.membership.SetPeerClient(n.peerClient)
+	n.hintedHoff.SetPeerClient(n.peerClient)
+	n.antiEntropy.SetPeerClient(n.peerClient)
 }
 
 // InitRing adds a node to the consistent hash ring and returns its tokens.
@@ -527,25 +559,106 @@ func (n *Node) metricsHandler() http.HandlerFunc {
 	}
 }
 
-// NodeOperations interface implementation for RPC server
+// Peer message handling for the default HTTP transport server.
 
-// GetNodeID returns this node's ID (implements rpc.NodeOperations)
+// HandleMessage processes an inbound opaque peer message.
+func (n *Node) HandleMessage(ctx context.Context, msg transport.Message) (transport.Message, error) {
+	switch msg.Type {
+	case peer.TypeGet:
+		var req peer.GetRequest
+		if err := json.Unmarshal(msg.Payload, &req); err != nil {
+			return transport.Message{}, err
+		}
+		values, err := n.LocalGet(req.Key)
+		resp := peer.GetResponse{}
+		if err == storage.ErrKeyNotFound {
+			err = nil
+		}
+		if err != nil {
+			resp.Error = err.Error()
+		} else {
+			resp.Values = peer.FromVersionedValues(values)
+		}
+		return encodePeerResponse(peer.TypeGetOK, resp)
+	case peer.TypePut:
+		var req peer.PutRequest
+		if err := json.Unmarshal(msg.Payload, &req); err != nil {
+			return transport.Message{}, err
+		}
+		err := n.LocalPut(req.Key, req.Value.ToVersionedValue())
+		resp := peer.PutResponse{Success: err == nil}
+		if err != nil {
+			resp.Error = err.Error()
+		}
+		return encodePeerResponse(peer.TypePutOK, resp)
+	case peer.TypeGossip:
+		var req peer.GossipRequest
+		if err := json.Unmarshal(msg.Payload, &req); err != nil {
+			return transport.Message{}, err
+		}
+		return encodePeerResponse(peer.TypeGossipOK, peer.GossipResponse{
+			Members: n.HandleGossip(req.Members),
+		})
+	case peer.TypeSync:
+		var req peer.SyncRequest
+		if err := json.Unmarshal(msg.Payload, &req); err != nil {
+			return transport.Message{}, err
+		}
+		return encodePeerResponse(peer.TypeSyncOK, n.HandleSync(&req))
+	case peer.TypeHint:
+		var req peer.HintRequest
+		if err := json.Unmarshal(msg.Payload, &req); err != nil {
+			return transport.Message{}, err
+		}
+		err := n.HandleHint(&req)
+		resp := peer.HintResponse{Success: err == nil}
+		if err != nil {
+			resp.Error = err.Error()
+		}
+		return encodePeerResponse(peer.TypeHintOK, resp)
+	case peer.TypeStoreHint:
+		var req peer.StoreHintRequest
+		if err := json.Unmarshal(msg.Payload, &req); err != nil {
+			return transport.Message{}, err
+		}
+		err := n.HandleStoreHint(&req)
+		resp := peer.StoreHintResponse{Success: err == nil}
+		if err != nil {
+			resp.Error = err.Error()
+		}
+		return encodePeerResponse(peer.TypeStoreOK, resp)
+	case peer.TypeHealth:
+		return encodePeerResponse(peer.TypeHealthOK, peer.HealthResponse{Status: "ok", NodeID: n.id})
+	default:
+		return transport.Message{}, fmt.Errorf("unknown peer message type %q", msg.Type)
+	}
+}
+
+func encodePeerResponse(msgType string, payload any) (transport.Message, error) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return transport.Message{}, err
+	}
+	return transport.Message{Type: msgType, Payload: body}, nil
+}
+
+// GetNodeID returns this node's ID.
 func (n *Node) GetNodeID() string {
 	return n.id
 }
 
-// LocalGet retrieves values from local storage (implements rpc.NodeOperations)
+// LocalGet retrieves values from local storage.
 func (n *Node) LocalGet(key string) ([]versioning.VersionedValue, error) {
 	return n.storage.Get(key)
 }
 
-// LocalPut stores a value in local storage (implements rpc.NodeOperations)
+// LocalPut stores a value in local storage.
 func (n *Node) LocalPut(key string, value versioning.VersionedValue) error {
 	return n.storage.Put(key, value)
 }
 
-// HandleGossip processes incoming gossip and returns local membership (implements rpc.NodeOperations)
-func (n *Node) HandleGossip(members []rpc.MemberDTO) []rpc.MemberDTO {
+// HandleGossip processes incoming gossip and returns local membership.
+func (n *Node) HandleGossip(members []peer.MemberDTO) []peer.MemberDTO {
 	// Merge incoming membership information
 	for _, m := range members {
 		existing := n.membership.GetMember(m.NodeID)
@@ -570,9 +683,9 @@ func (n *Node) HandleGossip(members []rpc.MemberDTO) []rpc.MemberDTO {
 
 	// Return our membership list
 	localMembers := n.membership.GetAllMembers()
-	result := make([]rpc.MemberDTO, len(localMembers))
+	result := make([]peer.MemberDTO, len(localMembers))
 	for i, m := range localMembers {
-		result[i] = rpc.MemberDTO{
+		result[i] = peer.MemberDTO{
 			NodeID:    m.NodeID,
 			Address:   m.Address,
 			Status:    int(m.Status),
@@ -584,12 +697,12 @@ func (n *Node) HandleGossip(members []rpc.MemberDTO) []rpc.MemberDTO {
 	return result
 }
 
-// HandleSync processes anti-entropy sync request (implements rpc.NodeOperations)
-func (n *Node) HandleSync(req *rpc.SyncRequest) *rpc.SyncResponse {
+// HandleSync processes anti-entropy sync request.
+func (n *Node) HandleSync(req *peer.SyncRequest) *peer.SyncResponse {
 	// Get data for the requested key range
 	data, err := n.storage.GetRange(req.KeyRange.Start, req.KeyRange.End)
 	if err != nil {
-		return &rpc.SyncResponse{Error: err.Error()}
+		return &peer.SyncResponse{Error: err.Error()}
 	}
 
 	// Build Merkle tree for the range
@@ -615,24 +728,24 @@ func (n *Node) HandleSync(req *rpc.SyncRequest) *rpc.SyncResponse {
 		}
 	}
 
-	return &rpc.SyncResponse{
+	return &peer.SyncResponse{
 		TreeRoot:    []byte(tree.GetRootHash()),
 		Differences: differences,
 	}
 }
 
-// HandleHint processes a hinted handoff delivery (implements rpc.NodeOperations).
+// HandleHint processes a hinted handoff delivery.
 // The data goes directly into storage — this is called when a substitute node
 // delivers its stored hint to the recovered target node.
-func (n *Node) HandleHint(req *rpc.HintRequest) error {
+func (n *Node) HandleHint(req *peer.HintRequest) error {
 	value := req.Value.ToVersionedValue()
 	return n.storage.Put(req.Key, value)
 }
 
-// HandleStoreHint stores a hint for a failed node (implements rpc.NodeOperations).
+// HandleStoreHint stores a hint for a failed node.
 // Per the Dynamo paper, this node is acting as a substitute: it holds the hint
 // in its local handoff queue and delivers it when the target node recovers.
-func (n *Node) HandleStoreHint(req *rpc.StoreHintRequest) error {
+func (n *Node) HandleStoreHint(req *peer.StoreHintRequest) error {
 	value := req.Value.ToVersionedValue()
 	hint := &replication.Hint{
 		ForNode:   req.TargetNode,

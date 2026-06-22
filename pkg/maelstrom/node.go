@@ -10,7 +10,6 @@ import (
 
 	"github.com/tripab/toy-dynamo/pkg/dynamo"
 	"github.com/tripab/toy-dynamo/pkg/membership"
-	"github.com/tripab/toy-dynamo/pkg/rpc"
 	"github.com/tripab/toy-dynamo/pkg/versioning"
 )
 
@@ -19,7 +18,6 @@ import (
 // and versioning logic for request processing.
 type Node struct {
 	transport *Transport
-	router    *Router
 	inner     *dynamo.Node
 	nodeID    string
 	nodeIDs   []string
@@ -90,6 +88,7 @@ func (n *Node) initDynamo() error {
 	cfg.MetricsEnabled = false
 	cfg.EnableCircuitBreaker = false
 	cfg.EnableRetry = false
+	cfg.DisableHTTPServer = true
 
 	if clusterSize >= 3 {
 		cfg.N = 3
@@ -103,12 +102,15 @@ func (n *Node) initDynamo() error {
 
 	// Use fewer vnodes for smaller clusters (faster ring setup).
 	cfg.VirtualNodes = 64
+	peerTransport := NewPeerTransport(n.transport, cfg.RequestTimeout)
+	cfg.Transport = peerTransport
 
 	var err error
 	n.inner, err = dynamo.NewNode(n.nodeID, n.nodeID, cfg)
 	if err != nil {
 		return fmt.Errorf("create dynamo node: %w", err)
 	}
+	peerTransport.SetHandler(n.inner)
 
 	// Set up the consistent hash ring and membership for all cluster nodes.
 	for _, id := range n.nodeIDs {
@@ -122,17 +124,6 @@ func (n *Node) initDynamo() error {
 			Timestamp: time.Now(),
 		})
 	}
-
-	// Create the Router for inter-node communication.
-	n.router = NewRouter(n.transport, n.inner, cfg.RequestTimeout)
-
-	// Register the store-hint handler on the transport. This lives here
-	// (not in the Router) because it calls into the dynamo Node's RPC
-	// interface, keeping Maelstrom-specific wiring out of core packages.
-	n.transport.Handle(MsgTypeInternalStoreHint, n.handleInternalStoreHint)
-
-	// Plug the Router into the coordinator as the remote transport.
-	n.inner.SetRemoteReadWriter(&routerAdapter{router: n.router})
 
 	return nil
 }
@@ -252,28 +243,6 @@ func kvErrorCode(err error) int {
 	return ErrorKeyNotFound
 }
 
-// handleInternalStoreHint handles incoming store-hint requests from other nodes.
-// It delegates to the dynamo Node's HandleStoreHint (part of rpc.NodeOperations),
-// keeping Maelstrom protocol translation in pkg/maelstrom.
-func (n *Node) handleInternalStoreHint(msg Message) error {
-	var body InternalStoreHintBody
-	if err := json.Unmarshal(msg.Body, &body); err != nil {
-		return n.replyError(msg, body.MsgID, ErrorMalformedRequest, "bad store-hint request")
-	}
-
-	err := n.inner.HandleStoreHint(&rpc.StoreHintRequest{
-		TargetNode: body.TargetNode,
-		Key:        body.Key,
-		Value:      rpc.FromVersionedValue(toVersionedValue(body.Value)),
-	})
-
-	return n.transport.Reply(msg, InternalStoreHintOKBody{
-		Type:      MsgTypeInternalStoreHintOK,
-		InReplyTo: body.MsgID,
-		Success:   err == nil,
-	})
-}
-
 func (n *Node) replyError(msg Message, inReplyTo int, code int, text string) error {
 	return n.transport.Reply(msg, ErrorBody{
 		Type:      MsgTypeError,
@@ -302,29 +271,4 @@ func reconcileLWW(values []versioning.VersionedValue) any {
 		return string(latest.Data)
 	}
 	return result
-}
-
-// routerAdapter adapts the maelstrom Router to the dynamo.RemoteReadWriter interface.
-type routerAdapter struct {
-	router *Router
-}
-
-func (a *routerAdapter) ReadFromRemote(nodeID, key string) ([]versioning.VersionedValue, error) {
-	return a.router.RemoteGet(nodeID, key)
-}
-
-func (a *routerAdapter) WriteToRemote(nodeID, key string, value versioning.VersionedValue) error {
-	ok, err := a.router.RemotePut(nodeID, key, value)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return fmt.Errorf("remote put to %s failed", nodeID)
-	}
-	return nil
-}
-
-// StoreHintOnRemote implements dynamo.RemoteHintStorer for the Maelstrom transport.
-func (a *routerAdapter) StoreHintOnRemote(substituteNodeID, targetNode, key string, value versioning.VersionedValue) error {
-	return a.router.RemoteStoreHint(substituteNodeID, targetNode, key, value)
 }

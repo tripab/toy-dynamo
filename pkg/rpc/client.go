@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/tripab/toy-dynamo/pkg/transport"
 	"github.com/tripab/toy-dynamo/pkg/versioning"
 )
 
@@ -133,6 +134,16 @@ func (c *Client) getHTTPClient(address string) (*http.Client, error) {
 		return c.pool.GetClient(address)
 	}
 	return c.httpClient, nil
+}
+
+// Send sends an opaque peer message over HTTP. The RPC transport does not
+// inspect the message type or payload; routing happens in the receiving node.
+func (c *Client) Send(ctx context.Context, target string, msg transport.Message) (transport.Message, error) {
+	var resp transport.Message
+	if err := c.doRequest(ctx, target, "/rpc/message", msg, &resp); err != nil {
+		return transport.Message{}, err
+	}
+	return resp, nil
 }
 
 // Get retrieves values from a remote node

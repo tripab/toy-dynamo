@@ -9,7 +9,7 @@ import (
 	"sync"
 
 	"github.com/tripab/toy-dynamo/pkg/membership"
-	"github.com/tripab/toy-dynamo/pkg/rpc"
+	"github.com/tripab/toy-dynamo/pkg/peer"
 	"github.com/tripab/toy-dynamo/pkg/types"
 	"github.com/tripab/toy-dynamo/pkg/versioning"
 )
@@ -22,7 +22,7 @@ type AntiEntropy struct {
 	ring       types.Ring
 	membership *membership.Membership
 	config     types.Config
-	rpcClient  *rpc.Client
+	peerClient *peer.Client
 	trees      map[KeyRange]*MerkleTree
 	mu         sync.RWMutex
 }
@@ -39,19 +39,19 @@ func NewAntiEntropy(nodeID string, storage types.Storage, ring types.Ring, membe
 	}
 }
 
-// SetRPCClient sets the RPC client for anti-entropy communication
-func (ae *AntiEntropy) SetRPCClient(client *rpc.Client) {
+// SetPeerClient sets the client for anti-entropy communication.
+func (ae *AntiEntropy) SetPeerClient(client *peer.Client) {
 	ae.mu.Lock()
 	defer ae.mu.Unlock()
-	ae.rpcClient = client
+	ae.peerClient = client
 }
 
 // Run executes one anti-entropy round
 func (ae *AntiEntropy) Run() {
 	ae.mu.RLock()
-	if ae.rpcClient == nil {
+	if ae.peerClient == nil {
 		ae.mu.RUnlock()
-		return // Cannot sync without RPC client
+		return // Cannot sync without a peer client.
 	}
 	ae.mu.RUnlock()
 
@@ -122,19 +122,19 @@ func (ae *AntiEntropy) syncWithReplica(replicaID string, keyRange KeyRange, loca
 	}
 
 	ae.mu.RLock()
-	client := ae.rpcClient
+	client := ae.peerClient
 	ae.mu.RUnlock()
 
 	if client == nil {
 		return
 	}
 
-	// Make RPC call to get remote sync response
+	// Make peer call to get remote sync response
 	ctx, cancel := context.WithTimeout(context.Background(), ae.config.GetRequestTimeout())
 	defer cancel()
 
-	syncReq := &rpc.SyncRequest{
-		KeyRange: rpc.KeyRange{
+	syncReq := &peer.SyncRequest{
+		KeyRange: peer.KeyRange{
 			Start: keyRange.Start,
 			End:   keyRange.End,
 		},
@@ -287,7 +287,7 @@ func (ae *AntiEntropy) syncKey(replicaID string, key string) {
 	}
 
 	ae.mu.RLock()
-	client := ae.rpcClient
+	client := ae.peerClient
 	ae.mu.RUnlock()
 
 	if client == nil {
@@ -336,7 +336,7 @@ func (ae *AntiEntropy) pushKeyToReplica(replicaID string, key string) {
 	}
 
 	ae.mu.RLock()
-	client := ae.rpcClient
+	client := ae.peerClient
 	ae.mu.RUnlock()
 
 	if client == nil {

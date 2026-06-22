@@ -1,6 +1,10 @@
 package dynamo
 
-import "time"
+import (
+	"time"
+
+	"github.com/tripab/toy-dynamo/pkg/transport"
+)
 
 type Config struct {
 	// Replication factor - number of nodes to replicate each key
@@ -104,6 +108,14 @@ type Config struct {
 
 	// MetricsEnabled enables the metrics collection and /metrics endpoint
 	MetricsEnabled bool
+
+	// Transport is the outbound inter-node message transport. If nil, NewNode
+	// installs the HTTP RPC transport for backward-compatible local clusters.
+	Transport transport.Transport
+
+	// DisableHTTPServer prevents NewNode from starting the bundled HTTP server.
+	// Use this when another runtime (for example Maelstrom) owns inbound routing.
+	DisableHTTPServer bool
 }
 
 func DefaultConfig() *Config {
@@ -178,8 +190,8 @@ func (c *Config) GetAdmissionMinBackgroundSlots() int         { return c.Admissi
 func (c *Config) GetAdmissionWindowSize() int                 { return c.AdmissionWindowSize }
 
 // Coordinator selection getters
-func (c *Config) GetCoordinatorSelectionEnabled() bool    { return c.CoordinatorSelectionEnabled }
-func (c *Config) GetCoordinatorSelectionWindowSize() int  { return c.CoordinatorSelectionWindowSize }
+func (c *Config) GetCoordinatorSelectionEnabled() bool   { return c.CoordinatorSelectionEnabled }
+func (c *Config) GetCoordinatorSelectionWindowSize() int { return c.CoordinatorSelectionWindowSize }
 
 // Metrics getter
 func (c *Config) GetMetricsEnabled() bool { return c.MetricsEnabled }

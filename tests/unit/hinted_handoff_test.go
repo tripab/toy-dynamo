@@ -121,7 +121,7 @@ func TestHintedHandoffDeliverHints_NodeSuspected(t *testing.T) {
 	hh.DeliverHints()
 }
 
-func TestHintedHandoffDeliverHints_NoRPCClient(t *testing.T) {
+func TestHintedHandoffDeliverHints_NoPeerClient(t *testing.T) {
 	hh, mem := newTestHintedHandoff("node1")
 
 	mem.AddMember(&membership.Member{
@@ -163,11 +163,11 @@ func TestHintedHandoffDeliverHints_UnknownNode(t *testing.T) {
 	hh.DeliverHints()
 }
 
-func TestHintedHandoffSetRPCClient(t *testing.T) {
+func TestHintedHandoffSetPeerClient(t *testing.T) {
 	hh, _ := newTestHintedHandoff("node1")
 
 	// Setting nil should not panic
-	hh.SetRPCClient(nil)
+	hh.SetPeerClient(nil)
 }
 
 func TestHintedHandoffDeliverHints_EmptyHints(t *testing.T) {

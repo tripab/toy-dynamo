@@ -3,10 +3,10 @@
 // Replicator, HintedHandoff, AntiEntropy, and Membership.
 //
 // Note on interface design:
-// - Components may import concrete types (e.g., *membership.Membership) directly when
-//   Go's interface limitations prevent clean abstraction (return type variance).
-// - The interfaces here are designed to be satisfied by existing implementations
-//   without requiring changes to those implementations.
+//   - Components may import concrete types (e.g., *membership.Membership) directly when
+//     Go's interface limitations prevent clean abstraction (return type variance).
+//   - The interfaces here are designed to be satisfied by existing implementations
+//     without requiring changes to those implementations.
 package types
 
 import (
@@ -74,17 +74,4 @@ type Config interface {
 type NodeInfo interface {
 	GetID() string
 	GetAddress() string
-}
-
-// RPCClient provides methods for making RPC calls to other nodes.
-// Will be implemented by: rpc.Client (in Phase 1.6)
-type RPCClient interface {
-	// Get retrieves values from a remote node
-	Get(address, key string) ([]versioning.VersionedValue, error)
-	// Put sends a value to a remote node
-	Put(address, key string, value versioning.VersionedValue) error
-	// Gossip exchanges membership information
-	GossipExchange(address string, members []MemberInfo) ([]MemberInfo, error)
-	// DeliverHint sends a hinted handoff to the target node
-	DeliverHint(address, key string, value versioning.VersionedValue) error
 }

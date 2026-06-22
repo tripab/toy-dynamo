@@ -149,7 +149,7 @@ func TestGossipHeartbeatIncrement(t *testing.T) {
 	}
 }
 
-func TestGossipWithNoRPCClient(t *testing.T) {
+func TestGossipWithNoPeerClient(t *testing.T) {
 	config := newMockConfig()
 	m := membership.NewMembership("node1", "localhost:8000", config)
 
@@ -162,7 +162,7 @@ func TestGossipWithNoRPCClient(t *testing.T) {
 		Heartbeat: 1, Timestamp: time.Now(),
 	})
 
-	// Without RPC client, gossipWith should be a no-op
+	// Without peer client, gossipWith should be a no-op
 	m.Gossip()
 
 	// Heartbeat should still increment for local node
@@ -224,14 +224,14 @@ func TestGossipMergeMembers_NewMember(t *testing.T) {
 	}
 }
 
-func TestSyncWithSeed_NoRPCClient(t *testing.T) {
+func TestSyncWithSeed_NoPeerClient(t *testing.T) {
 	config := newMockConfig()
 	m := membership.NewMembership("node1", "localhost:8000", config)
 
-	// Without RPC client, should return error
+	// Without peer client, should return error
 	_, err := m.SyncWithSeed("localhost:9000")
 	if err == nil {
-		t.Error("Expected error when syncing without RPC client")
+		t.Error("Expected error when syncing without peer client")
 	}
 }
 
@@ -296,12 +296,12 @@ func TestGossipBuildMemberDTOs(t *testing.T) {
 	}
 }
 
-func TestGossipSetRPCClient(t *testing.T) {
+func TestGossipSetPeerClient(t *testing.T) {
 	config := newMockConfig()
 	m := membership.NewMembership("node1", "localhost:8000", config)
 
-	// Setting nil RPC client should not panic
-	m.SetRPCClient(nil)
+	// Setting nil peer client should not panic
+	m.SetPeerClient(nil)
 }
 
 func TestGossipSetFailureDetector(t *testing.T) {

@@ -25,16 +25,16 @@ type mockConfig struct {
 	vectorClockMaxSize   int
 }
 
-func (c *mockConfig) GetN() int                         { return c.n }
-func (c *mockConfig) GetR() int                         { return c.r }
-func (c *mockConfig) GetW() int                         { return c.w }
-func (c *mockConfig) GetGossipInterval() time.Duration  { return c.gossipInterval }
+func (c *mockConfig) GetN() int                             { return c.n }
+func (c *mockConfig) GetR() int                             { return c.r }
+func (c *mockConfig) GetW() int                             { return c.w }
+func (c *mockConfig) GetGossipInterval() time.Duration      { return c.gossipInterval }
 func (c *mockConfig) GetAntiEntropyInterval() time.Duration { return c.antiEntropyInterval }
-func (c *mockConfig) GetHintedHandoffEnabled() bool     { return c.hintedHandoffEnabled }
-func (c *mockConfig) GetHintTimeout() time.Duration     { return c.hintTimeout }
-func (c *mockConfig) GetRequestTimeout() time.Duration  { return c.requestTimeout }
-func (c *mockConfig) GetReadRepairEnabled() bool        { return c.readRepairEnabled }
-func (c *mockConfig) GetVectorClockMaxSize() int        { return c.vectorClockMaxSize }
+func (c *mockConfig) GetHintedHandoffEnabled() bool         { return c.hintedHandoffEnabled }
+func (c *mockConfig) GetHintTimeout() time.Duration         { return c.hintTimeout }
+func (c *mockConfig) GetRequestTimeout() time.Duration      { return c.requestTimeout }
+func (c *mockConfig) GetReadRepairEnabled() bool            { return c.readRepairEnabled }
+func (c *mockConfig) GetVectorClockMaxSize() int            { return c.vectorClockMaxSize }
 
 func newMockConfig() *mockConfig {
 	return &mockConfig{
@@ -64,7 +64,7 @@ func TestAntiEntropyCreation(t *testing.T) {
 	}
 }
 
-func TestAntiEntropyRunWithoutRPCClient(t *testing.T) {
+func TestAntiEntropyRunWithoutPeerClient(t *testing.T) {
 	store := storage.NewMemoryStorage()
 	r := ring.NewRing(3, 10)
 	m := membership.NewMembership("node1", "localhost:8080", newMockConfig())
@@ -72,7 +72,7 @@ func TestAntiEntropyRunWithoutRPCClient(t *testing.T) {
 
 	ae := synchronization.NewAntiEntropy("node1", store, r, m, config)
 
-	// Run without RPC client should not panic
+	// Run without peer client should not panic
 	ae.Run()
 }
 

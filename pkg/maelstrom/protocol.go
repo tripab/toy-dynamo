@@ -3,7 +3,11 @@
 // See https://github.com/jepsen-io/maelstrom
 package maelstrom
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	coretransport "github.com/tripab/toy-dynamo/pkg/transport"
+)
 
 // Message is the top-level Maelstrom protocol envelope.
 type Message struct {
@@ -45,16 +49,16 @@ type ErrorBody struct {
 
 // Maelstrom error codes.
 const (
-	ErrorTimeout              = 0
-	ErrorNotSupported         = 10
-	ErrorTemporarilyUnavail   = 11
-	ErrorMalformedRequest     = 12
-	ErrorCrash                = 13
-	ErrorAbort                = 14
-	ErrorKeyNotFound          = 20
-	ErrorKeyAlreadyExists     = 21
-	ErrorPreconditionFailed   = 22
-	ErrorTxnConflict          = 30
+	ErrorTimeout            = 0
+	ErrorNotSupported       = 10
+	ErrorTemporarilyUnavail = 11
+	ErrorMalformedRequest   = 12
+	ErrorCrash              = 13
+	ErrorAbort              = 14
+	ErrorKeyNotFound        = 20
+	ErrorKeyAlreadyExists   = 21
+	ErrorPreconditionFailed = 22
+	ErrorTxnConflict        = 30
 )
 
 // --- lin-kv workload messages ---
@@ -122,9 +126,9 @@ type InternalGetOKBody struct {
 
 // InternalPutBody is a node-to-node write request.
 type InternalPutBody struct {
-	Type  string          `json:"type"`
-	MsgID int             `json:"msg_id"`
-	Key   string          `json:"key"`
+	Type  string            `json:"type"`
+	MsgID int               `json:"msg_id"`
+	Key   string            `json:"key"`
 	Value VersionedValueDTO `json:"value"`
 }
 
@@ -151,10 +155,10 @@ type InternalGossipOKBody struct {
 
 // InternalHintBody is a node-to-node hinted handoff delivery.
 type InternalHintBody struct {
-	Type         string          `json:"type"`
-	MsgID        int             `json:"msg_id"`
-	OriginalNode string          `json:"original_node"`
-	Key          string          `json:"key"`
+	Type         string            `json:"type"`
+	MsgID        int               `json:"msg_id"`
+	OriginalNode string            `json:"original_node"`
+	Key          string            `json:"key"`
 	Value        VersionedValueDTO `json:"value"`
 }
 
@@ -181,6 +185,21 @@ type InternalStoreHintOKBody struct {
 	Success   bool   `json:"success"`
 }
 
+// InternalPeerBody carries an opaque Toy Dynamo peer transport message through
+// Maelstrom's JSON network.
+type InternalPeerBody struct {
+	Type    string                `json:"type"`
+	MsgID   int                   `json:"msg_id"`
+	Message coretransport.Message `json:"message"`
+}
+
+// InternalPeerOKBody is the response to an opaque peer transport message.
+type InternalPeerOKBody struct {
+	Type      string                `json:"type"`
+	InReplyTo int                   `json:"in_reply_to"`
+	Message   coretransport.Message `json:"message"`
+}
+
 // --- DTO types for serialization over Maelstrom ---
 
 // VersionedValueDTO is a JSON-serializable versioned value for Maelstrom transport.
@@ -201,9 +220,9 @@ type MemberDTO struct {
 
 // Internal message type constants.
 const (
-	MsgTypeInit    = "init"
-	MsgTypeInitOK  = "init_ok"
-	MsgTypeError   = "error"
+	MsgTypeInit   = "init"
+	MsgTypeInitOK = "init_ok"
+	MsgTypeError  = "error"
 
 	// Client-facing KV operations (lin-kv workload).
 	MsgTypeRead    = "read"
@@ -214,14 +233,16 @@ const (
 	MsgTypeCasOK   = "cas_ok"
 
 	// Internal node-to-node operations.
-	MsgTypeInternalGet      = "internal_get"
-	MsgTypeInternalGetOK    = "internal_get_ok"
-	MsgTypeInternalPut      = "internal_put"
-	MsgTypeInternalPutOK    = "internal_put_ok"
-	MsgTypeInternalGossip   = "internal_gossip"
-	MsgTypeInternalGossipOK = "internal_gossip_ok"
-	MsgTypeInternalHint          = "internal_hint"
-	MsgTypeInternalHintOK        = "internal_hint_ok"
-	MsgTypeInternalStoreHint     = "internal_store_hint"
-	MsgTypeInternalStoreHintOK   = "internal_store_hint_ok"
+	MsgTypeInternalGet         = "internal_get"
+	MsgTypeInternalGetOK       = "internal_get_ok"
+	MsgTypeInternalPut         = "internal_put"
+	MsgTypeInternalPutOK       = "internal_put_ok"
+	MsgTypeInternalGossip      = "internal_gossip"
+	MsgTypeInternalGossipOK    = "internal_gossip_ok"
+	MsgTypeInternalHint        = "internal_hint"
+	MsgTypeInternalHintOK      = "internal_hint_ok"
+	MsgTypeInternalStoreHint   = "internal_store_hint"
+	MsgTypeInternalStoreHintOK = "internal_store_hint_ok"
+	MsgTypeInternalPeer        = "internal_peer"
+	MsgTypeInternalPeerOK      = "internal_peer_ok"
 )
