@@ -14,6 +14,7 @@
 #   lossy-3           3-node with message latency and loss
 #   lossy-5           5-node with message latency and loss
 #   convergence       5-node partition test (long) for convergence
+#   ci                Bounded core suite used by GitHub Actions
 #   all               Run all tests sequentially
 #
 # If no test name is given, runs "lin-kv-3" as a quick smoke test.
@@ -70,6 +71,7 @@ check_prerequisites() {
 
 build_binary() {
     info "Building maelstrom-dynamo binary..."
+    mkdir -p "$(dirname "$BIN")" "$STORE"
     (cd "$ROOT" && go build -o "$BIN" ./cmd/maelstrom/)
     info "Binary built at $BIN"
 }
@@ -213,6 +215,12 @@ case "$TEST_NAME" in
     lossy-3)      test_lossy_3     || FAILURES=$((FAILURES + 1)) ;;
     lossy-5)      test_lossy_5     || FAILURES=$((FAILURES + 1)) ;;
     convergence)  test_convergence || FAILURES=$((FAILURES + 1)) ;;
+    ci)
+        test_smoke       || FAILURES=$((FAILURES + 1))
+        test_lin_kv_3    || FAILURES=$((FAILURES + 1))
+        test_partition_3 || FAILURES=$((FAILURES + 1))
+        test_lossy_3     || FAILURES=$((FAILURES + 1))
+        ;;
     all)
         test_smoke        || FAILURES=$((FAILURES + 1))
         test_read_your_writes || FAILURES=$((FAILURES + 1))
@@ -226,7 +234,7 @@ case "$TEST_NAME" in
         ;;
     *)
         echo "Unknown test: $TEST_NAME"
-        echo "Available: smoke, read-your-writes, lin-kv-3, lin-kv-5, partition-3, partition-5, lossy-3, lossy-5, convergence, all"
+        echo "Available: smoke, read-your-writes, lin-kv-3, lin-kv-5, partition-3, partition-5, lossy-3, lossy-5, convergence, ci, all"
         exit 1
         ;;
 esac

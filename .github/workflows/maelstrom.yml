@@ -1,0 +1,45 @@
+name: Maelstrom correctness
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  maelstrom:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Download Maelstrom
+        env:
+          MAELSTROM_VERSION: 0.2.3
+        run: |
+          rm -rf maelstrom
+          curl --fail --location --silent --show-error \
+            "https://github.com/jepsen-io/maelstrom/releases/download/v${MAELSTROM_VERSION}/maelstrom.tar.bz2" \
+            --output /tmp/maelstrom.tar.bz2
+          tar -xjf /tmp/maelstrom.tar.bz2
+
+      - name: Run Go unit tests
+        run: go test ./pkg/... ./cmd/... ./tests/unit/...
+
+      - name: Run bounded Maelstrom suite
+        run: ./tests/maelstrom-tests/run_tests.sh ci
