@@ -28,6 +28,11 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      - name: Install Maelstrom report dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gnuplot-nox
+
       - name: Download Maelstrom
         env:
           MAELSTROM_VERSION: 0.2.3

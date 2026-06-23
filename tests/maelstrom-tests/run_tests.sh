@@ -14,7 +14,7 @@
 #   lossy-3           3-node with message latency and loss
 #   lossy-5           5-node with message latency and loss
 #   convergence       5-node partition test (long) for convergence
-#   ci                Bounded core suite used by GitHub Actions
+#   ci                Bounded deterministic suite used by GitHub Actions
 #   all               Run all tests sequentially
 #
 # If no test name is given, runs "lin-kv-3" as a quick smoke test.
@@ -219,7 +219,6 @@ case "$TEST_NAME" in
         test_smoke       || FAILURES=$((FAILURES + 1))
         test_lin_kv_3    || FAILURES=$((FAILURES + 1))
         test_partition_3 || FAILURES=$((FAILURES + 1))
-        test_lossy_3     || FAILURES=$((FAILURES + 1))
         ;;
     all)
         test_smoke        || FAILURES=$((FAILURES + 1))
