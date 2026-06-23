@@ -1,72 +1,116 @@
 # Toy Dynamo: Distributed Key-Value Store
 
-A toy (or simplified) Go implementation of Amazon's Dynamo distributed key-value store based on the [SOSP 2007 paper](https://www.allthingsdistributed.com/files/amazon-dynamo-sosp2007.pdf).
+Toy Dynamo is a Go implementation of the core ideas from Amazon's
+[Dynamo paper](https://www.allthingsdistributed.com/files/amazon-dynamo-sosp2007.pdf).
+It is intentionally small enough to study, but includes real implementations of
+the main distributed-systems mechanisms: consistent hashing, quorum reads and
+writes, vector clocks, hinted handoff, read repair, gossip membership,
+anti-entropy, and verification tooling.
 
-## Overview
+This is an educational system, not a production database.
 
-This implementation covers the core distributed systems techniques described in Sections 4, 5, and 6 of the Dynamo paper:
+## What is implemented
 
-- **Consistent Hashing with Virtual Nodes**: For incremental scalability and load distribution
-- **Replication**: Configurable N-way replication across nodes
-- **Vector Clocks**: For capturing causality and conflict detection
-- **Quorum-based Operations**: Tunable consistency with R/W/N parameters
-- **Hinted Handoff**: Handling temporary node failures
-- **Merkle Trees**: Anti-entropy for replica synchronization
-- **Gossip Protocol**: Decentralized membership and failure detection
-- **Read Repair**: Opportunistic replica synchronization
-
-## Features
-
-### Core Functionality
-- ✅ Simple key-value interface (`Get`, `Put`)
-- ✅ Consistent hashing ring with virtual nodes
-- ✅ Configurable replication factor (N)
-- ✅ Tunable consistency (R, W parameters)
-- ✅ Vector clock versioning for conflict detection
-- ✅ Application-level conflict resolution
-- ✅ Hinted handoff for write availability
-- ✅ Merkle tree-based anti-entropy
-- ✅ Gossip-based membership protocol
-- ✅ Pluggable storage engine interface
-
-### Production Considerations
-- Configurable per-instance settings
-- Multiple storage backend support
-- Performance metrics and monitoring hooks
-- Graceful node addition/removal
-- Client-driven and server-driven coordination
+- Consistent hashing ring with virtual nodes
+- Configurable replication factor `N`
+- Tunable read/write quorums `R` and `W`
+- Vector-clock versioning and conflict preservation
+- Application-level conflict reconciliation
+- Hinted handoff for temporarily unavailable replicas
+- Read repair on quorum reads
+- Merkle-tree anti-entropy
+- Gossip-based membership and failure detection
+- HTTP-based inter-node transport for local clusters
+- Pluggable transport boundary used by the Maelstrom adapter
+- In-memory storage and a custom log-structured storage engine
+- Prometheus-compatible metrics endpoint
+- Admission control for throttling background work under foreground load
+- Latency-aware coordinator selection
+- Maelstrom correctness workloads
+- Focused TLA+ models for core protocol invariants
 
 ## Architecture
 
+```mermaid
+flowchart TB
+    app[Client application] --> api[pkg/dynamo.Node API]
+    api --> coord[Request coordinator]
+
+    coord --> ring[Consistent hash ring]
+    coord --> vc[Vector clocks and reconciliation]
+    coord --> peer[Peer client]
+    coord --> local[(Local storage)]
+
+    peer --> transport{transport.Transport}
+    transport --> http[HTTP RPC transport]
+    transport --> maelstrom[Maelstrom JSON/STDIO transport]
+
+    http --> remoteA[Remote Dynamo node]
+    http --> remoteB[Remote Dynamo node]
+    maelstrom --> maelstromNet[Maelstrom simulated network]
+
+    api --> bg[Background services]
+    bg --> gossip[Gossip and failure detection]
+    bg --> entropy[Merkle anti-entropy]
+    bg --> hints[Hinted handoff]
+    bg --> compaction[Tombstone compaction]
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    Client Application                    │
-└────────────────────┬────────────────────────────────────┘
-                     │
-                     ▼
-        ┌────────────────────────┐
-        │   Request Coordinator  │
-        │  (State Machine Based) │
-        └────────┬───────────────┘
-                 │
-     ┌───────────┼───────────┐
-     ▼           ▼           ▼
-┌─────────┐ ┌─────────┐ ┌─────────┐
-│  Node A │ │  Node B │ │  Node C │
-├─────────┤ ├─────────┤ ├─────────┤
-│ Gossip  │ │ Gossip  │ │ Gossip  │
-│ Merkle  │ │ Merkle  │ │ Merkle  │
-│ Storage │ │ Storage │ │ Storage │
-└─────────┘ └─────────┘ └─────────┘
+
+The production-style local runtime uses HTTP RPC for node-to-node messages.
+The Maelstrom runtime uses the same core coordinator, ring, versioning,
+replication, and storage code, but swaps the inter-node transport for
+Maelstrom's JSON-over-STDIO network.
+
+## Write and read flow
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant N as Coordinator node
+    participant R as Consistent hash ring
+    participant A as Replica A
+    participant B as Replica B
+    participant D as Replica C
+
+    C->>N: Put(key, value, context)
+    N->>R: preference list for key
+    N->>N: increment vector clock
+    par replicate
+        N->>A: store version
+        N->>B: store version
+        N->>D: store version
+    end
+    N-->>C: success after W acknowledgements
+
+    C->>N: Get(key)
+    N->>R: preference list for key
+    par quorum read
+        N->>A: read versions
+        N->>B: read versions
+        N->>D: read versions
+    end
+    N->>N: reconcile by vector-clock causality
+    N-->>C: visible versions plus merged context
+    N-->>A: async read repair if stale
+    N-->>B: async read repair if stale
+    N-->>D: async read repair if stale
 ```
+
+With `R + W > N`, read and write quorums overlap. Toy Dynamo still exposes
+Dynamo-style semantics: concurrent writes can produce multiple visible versions,
+and the application is responsible for semantic reconciliation.
 
 ## Installation
 
-```bash
+Use the module directly from Go:
+
+```sh
 go get github.com/tripab/toy-dynamo
 ```
 
-## Quick Start
+The public package is `github.com/tripab/toy-dynamo/pkg/dynamo`.
+
+## Quick start
 
 ```go
 package main
@@ -74,337 +118,272 @@ package main
 import (
     "context"
     "fmt"
-    "github.com/tripab/toy-dynamo"
+    "log"
+
+    "github.com/tripab/toy-dynamo/pkg/dynamo"
 )
 
 func main() {
-    // Create a new Dynamo instance
-    config := &dynamo.Config{
-        N: 3,  // Replication factor
-        R: 2,  // Read quorum
-        W: 2,  // Write quorum
-        VirtualNodes: 256,
-    }
-    
+    config := dynamo.DefaultConfig()
+    config.N = 1
+    config.R = 1
+    config.W = 1
+
     node, err := dynamo.NewNode("node1", "localhost:8001", config)
     if err != nil {
-        panic(err)
+        log.Fatal(err)
     }
     defer node.Stop()
-    
-    // Start the node
+
     if err := node.Start(); err != nil {
-        panic(err)
+        log.Fatal(err)
     }
-    
+
     ctx := context.Background()
-    
-    // Put a value
-    err = node.Put(ctx, "user:123", []byte("Alice"), nil)
-    if err != nil {
-        panic(err)
+
+    if err := node.Put(ctx, "user:123", []byte("Alice"), nil); err != nil {
+        log.Fatal(err)
     }
-    
-    // Get the value
+
     result, err := node.Get(ctx, "user:123")
     if err != nil {
-        panic(err)
+        log.Fatal(err)
     }
-    
+
     fmt.Printf("Value: %s\n", result.Values[0].Data)
+
+    if err := node.Put(ctx, "user:123", []byte("Alice Smith"), result.Context); err != nil {
+        log.Fatal(err)
+    }
 }
 ```
+
+More complete examples are in:
+
+- `examples/simple`
+- `examples/cluster`
+- `examples/shopping_cart`
 
 ## Configuration
 
-### Node Configuration
+Start with `dynamo.DefaultConfig()` and override only the values relevant to a
+test or experiment.
 
 ```go
-type Config struct {
-    // Replication factor
-    N int
-    
-    // Read quorum size
-    R int
-    
-    // Write quorum size
-    W int
-    
-    // Number of virtual nodes per physical node
-    VirtualNodes int
-    
-    // Storage engine type
-    StorageEngine string
-    
-    // Gossip interval
-    GossipInterval time.Duration
-    
-    // Anti-entropy interval
-    AntiEntropyInterval time.Duration
-    
-    // Hinted handoff settings
-    HintedHandoffEnabled bool
-    HintTimeout time.Duration
-    
-    // Vector clock pruning
-    VectorClockMaxSize int
-}
+config := dynamo.DefaultConfig()
+config.N = 3
+config.R = 2
+config.W = 2
+config.VirtualNodes = 256
+config.StorageEngine = "memory"
 ```
 
-### Typical Configurations
+Key settings:
 
-**High Availability (Shopping Cart)**
+| Setting | Purpose |
+|---|---|
+| `N` | Replication factor for each key. |
+| `R` | Number of replica responses required for a read. |
+| `W` | Number of replica acknowledgements required for a write. |
+| `VirtualNodes` | Number of ring tokens per physical node. |
+| `StorageEngine` | `"memory"`, `"lss"`, `"boltdb"`, or `"badger"`. |
+| `StoragePath` | Base path for persistent engines. |
+| `RequestTimeout` | Timeout for client-facing and peer requests. |
+| `ReadRepairEnabled` | Enables asynchronous repair after reads. |
+| `HintedHandoffEnabled` | Enables storing writes for temporarily unavailable replicas. |
+| `AntiEntropyInterval` | Interval for Merkle-tree synchronization rounds. |
+| `MetricsEnabled` | Enables Prometheus-format metrics on the HTTP server. |
+| `Transport` | Optional custom inter-node transport. |
+| `DisableHTTPServer` | Lets alternate runtimes, such as Maelstrom, own inbound routing. |
+
+Common quorum configurations:
+
+| Goal | Example | Notes |
+|---|---|---|
+| Balanced quorum | `N=3, R=2, W=2` | Read and write quorums intersect. |
+| Fast reads | `N=3, R=1, W=3` | Reads are cheap; writes require all replicas. |
+| Fast writes | `N=3, R=3, W=1` | Writes are cheap; reads require all replicas. |
+| Highest availability | `N=3, R=1, W=1` | No quorum intersection; stale reads are possible. |
+
+## Public API
+
 ```go
-config := &dynamo.Config{
-    N: 3, R: 2, W: 2,
-    VirtualNodes: 256,
-}
-```
-
-**High Read Performance**
-```go
-config := &dynamo.Config{
-    N: 3, R: 1, W: 3,
-    VirtualNodes: 256,
-}
-```
-
-**Strong Consistency**
-```go
-config := &dynamo.Config{
-    N: 3, R: 2, W: 2, // R + W > N
-    VirtualNodes: 256,
-}
-```
-
-## API Reference
-
-### Node Operations
-
-```go
-// Create a new node
 func NewNode(id, address string, config *Config) (*Node, error)
 
-// Start the node
 func (n *Node) Start() error
-
-// Stop the node
 func (n *Node) Stop() error
-
-// Join an existing ring
 func (n *Node) Join(seeds []string) error
-```
 
-### Data Operations
-
-```go
-// Put a key-value pair
 func (n *Node) Put(ctx context.Context, key string, value []byte, context *Context) error
-
-// Get a value by key (returns all conflicting versions)
 func (n *Node) Get(ctx context.Context, key string) (*GetResult, error)
-
-// Delete a key
 func (n *Node) Delete(ctx context.Context, key string, context *Context) error
 ```
 
-### Conflict Resolution
+`Get` returns all non-dominated versions plus a merged context. Pass that
+context back to `Put` after reconciling conflicts so the new write causally
+dominates the versions it resolved.
 
 ```go
 type GetResult struct {
-    Values  []VersionedValue
+    Values  []versioning.VersionedValue
     Context *Context
 }
-
-// Application provides reconciliation logic
-func reconcile(values []VersionedValue) []byte {
-    // Custom merge logic
-    return merged
-}
 ```
 
-## Storage Engines
+## Storage engines
 
-The implementation supports pluggable storage engines:
+Toy Dynamo supports the storage interface in `pkg/storage`.
 
-- **Memory**: In-memory storage (default, good for testing)
-- **BoltDB**: Embedded key-value store
-- **BadgerDB**: Fast embedded database
+| Engine | Status |
+|---|---|
+| `memory` | Default in-memory engine used by tests and examples. |
+| `lss` | Custom log-structured storage engine with segment files, indexing, recovery, and compaction. |
+| `boltdb` | Stub compatibility implementation; it does not persist data. |
+| `badger` | Stub compatibility implementation; it does not persist data. |
+
+Use `lss` for persistence experiments:
 
 ```go
-config := &dynamo.Config{
-    StorageEngine: "badger",
-    // ...
-}
+config := dynamo.DefaultConfig()
+config.StorageEngine = "lss"
+config.StoragePath = "./data"
 ```
 
-## Testing
+## Verification and testing
 
-### Unit Tests
-```bash
+```mermaid
+flowchart LR
+    code[Toy Dynamo codebase] --> gotest[Go unit and integration tests]
+    code --> maelstrom[Maelstrom correctness workloads]
+    code --> tla[TLA+ protocol models]
+
+    gotest --> unit[Unit tests]
+    gotest --> integration[Local multi-node integration tests]
+    gotest --> perf[Benchmarks]
+
+    maelstrom --> adapter[cmd/maelstrom adapter]
+    adapter --> realCore[Real coordinator, ring, vector clocks, storage]
+    adapter --> simulatedNetwork[Maelstrom simulated network]
+
+    tla --> quorum[Quorum read/write invariant]
+    tla --> clocks[Vector-clock consistency]
+    tla --> handoff[Sloppy quorum and hinted handoff safety]
+    tla --> convergence[Fair anti-entropy convergence]
+```
+
+Run the maintained Go packages:
+
+```sh
 go test ./pkg/... ./cmd/... ./tests/unit/...
 ```
 
-### Integration Tests
-```bash
+Run local integration tests:
+
+```sh
 go test ./tests/integration/...
 ```
 
-### Performance Tests
-```bash
+Run benchmarks:
+
+```sh
 go test -bench=. ./tests/performance/...
 ```
 
-### Maelstrom Correctness Tests
+Run Maelstrom profiles:
 
-The project includes a [Maelstrom](https://github.com/jepsen-io/maelstrom) adapter that runs the real Dynamo node under Jepsen-style linearizability checking. The adapter replaces the HTTP RPC transport with Maelstrom's JSON-over-STDIO protocol while preserving all core logic: consistent hashing, quorum coordination, vector clock versioning, and reconciliation.
-
-```bash
-# Build the adapter binary
-go build -o bin/maelstrom-dynamo ./cmd/maelstrom/
-
-# Run a 3-node linearizability test
-./maelstrom/maelstrom test -w lin-kv \
-  --bin ./bin/maelstrom-dynamo \
-  --node-count 3 \
-  --time-limit 10 \
-  --rate 10 \
-  --concurrency 2n
+```sh
+make maelstrom-test-quick   # smoke test
+make maelstrom-test         # all predefined scenarios
+make maelstrom-test-stress  # longer convergence scenario
 ```
 
-Requires Java 11+ and Maelstrom v0.2.3. See [TESTING.md](TESTING.md)
-for local profiles, CI artifacts, result interpretation, and workload extension
-instructions. [MAELSTROM_GUIDE.md](MAELSTROM_GUIDE.md) remains a compact
-command reference.
+Run the bounded TLA+ model checks:
 
-### TLA+ Model Checks
-
-Focused TLA+ specs for quorum reads/writes, vector clocks, sloppy quorum,
-hinted handoff, and anti-entropy convergence live in `specs/tla/`.
-
-```bash
+```sh
 make tla-check
 ```
 
-See [specs/tla/README.md](specs/tla/README.md) for the checked invariants and
-model scope.
+See [TESTING.md](TESTING.md) for prerequisites, CI behavior, Maelstrom result
+interpretation, and workflow details. [MAELSTROM_GUIDE.md](MAELSTROM_GUIDE.md)
+is a compact command reference. The TLA+ specs are documented in
+[specs/tla/README.md](specs/tla/README.md).
 
-## Project Structure
+## Maelstrom adapter
 
+The Maelstrom adapter builds as `bin/maelstrom-dynamo` from
+`cmd/maelstrom/main.go`.
+
+```mermaid
+flowchart TB
+    workload[Maelstrom lin-kv workload] --> network[Maelstrom simulated network]
+    network --> stdio[JSON over stdin/stdout]
+    stdio --> binary[bin/maelstrom-dynamo]
+
+    binary --> protocol[pkg/maelstrom/protocol.go]
+    binary --> transport[pkg/maelstrom/transport.go]
+    binary --> peer[pkg/maelstrom/peer_transport.go]
+    binary --> node[pkg/maelstrom/node.go]
+
+    peer --> core[pkg/dynamo.Node]
+    core --> coordinator[pkg/dynamo/coordinator.go]
+    coordinator --> storage[pkg/storage]
+    coordinator --> versioning[pkg/versioning]
+    coordinator --> replication[pkg/replication]
 ```
+
+The required CI profile runs deterministic smoke, three-node quorum, and
+partition scenarios. Latency stress scenarios such as `lossy-3` remain
+available locally, but are intentionally not required CI gates because the
+strict `lin-kv` checker can find real counterexamples under those conditions.
+
+## Project layout
+
+```text
 .
-├── README.md
-├── DESIGN.md
-├── go.mod
-├── go.sum
+├── cmd/maelstrom/              # Maelstrom adapter binary
+├── examples/                   # Simple, cluster, and shopping cart examples
 ├── pkg/
-│   ├── dynamo/
-│   │   ├── node.go              # Main node implementation
-│   │   ├── coordinator.go       # Request coordination
-│   │   ├── config.go            # Configuration
-│   │   └── api.go               # Public API
-│   ├── ring/
-│   │   ├── consistent_hash.go   # Consistent hashing
-│   │   ├── virtual_nodes.go     # Virtual node management
-│   │   └── partitioner.go       # Partitioning strategy
-│   ├── versioning/
-│   │   ├── vector_clock.go      # Vector clock implementation
-│   │   └── reconciler.go        # Version reconciliation
-│   ├── replication/
-│   │   ├── replicator.go        # Replication logic
-│   │   ├── quorum.go            # Quorum operations
-│   │   └── hinted_handoff.go    # Hinted handoff
-│   ├── membership/
-│   │   ├── gossip.go            # Gossip protocol
-│   │   ├── failure_detector.go  # Failure detection
-│   │   └── member.go            # Member information
-│   ├── sync/
-│   │   ├── merkle.go            # Merkle tree
-│   │   └── anti_entropy.go      # Anti-entropy protocol
-│   ├── storage/
-│   │   ├── interface.go         # Storage engine interface
-│   │   ├── memory.go            # In-memory engine
-│   │   ├── boltdb.go            # BoltDB engine
-│   │   └── badger.go            # BadgerDB engine
-│   └── maelstrom/
-│       ├── protocol.go          # Maelstrom message types
-│       ├── transport.go         # JSON-over-STDIO transport
-│       ├── router.go            # Inter-node message routing
-│       └── node.go              # Maelstrom-adapted Dynamo node
-├── cmd/
-│   └── maelstrom/
-│       └── main.go              # Maelstrom adapter binary
+│   ├── dynamo/                 # Node, API, coordinator, config
+│   ├── maelstrom/              # JSON/STDIO adapter and peer transport
+│   ├── membership/             # Gossip and failure detection
+│   ├── metrics/                # Prometheus-compatible metrics
+│   ├── peer/                   # Transport-backed peer client
+│   ├── replication/            # Replication and hinted handoff
+│   ├── ring/                   # Consistent hashing and virtual nodes
+│   ├── rpc/                    # HTTP RPC server/client, retry, circuit breaker
+│   ├── storage/                # Memory, LSS, and stub persistent engines
+│   ├── synchronization/        # Merkle trees and anti-entropy
+│   ├── transport/              # Inter-node transport interface
+│   ├── types/                  # Shared interfaces
+│   └── versioning/             # Vector clocks and reconciliation
+├── specs/tla/                  # TLA+ models and TLC configs
 ├── tests/
-│   ├── unit/                    # Unit tests
-│   ├── integration/             # Integration tests
-│   └── performance/             # Performance benchmarks
-└── examples/
-    ├── simple/                  # Basic usage
-    ├── shopping_cart/           # Shopping cart example
-    └── cluster/                 # Multi-node cluster
+│   ├── integration/            # Multi-node behavior tests
+│   ├── maelstrom-tests/        # Maelstrom runner profiles
+│   ├── performance/            # Benchmarks
+│   └── unit/                   # Unit tests
+├── ARCHITECTURE.md             # Detailed design notes
+├── TESTING.md                  # Test and verification guide
+├── MAELSTROM_GUIDE.md          # Compact Maelstrom command guide
+└── Makefile                    # Local verification targets
 ```
 
-## Performance
+## Current limitations
 
-Based on the paper's observations (Section 6):
-
-- **99.9th percentile latencies**: < 300ms (typical configuration)
-- **Divergent versions**: < 0.06% of requests see multiple versions
-- **Load balancing**: Within 15% deviation from average under high load
-- **Availability**: 99.9995% success rate in production environments
-
-### Benchmarks
-
-See `tests/performance/` for detailed benchmarks. Sample results:
-
-```
-BenchmarkPut-8     100000    15234 ns/op
-BenchmarkGet-8     200000     8456 ns/op
-BenchmarkQuorum-8   50000    28901 ns/op
-```
-
-## Limitations
-
-As noted in Section 6.6 of the paper:
-
-1. **Scalability**: The full membership model works well for hundreds of nodes but would require hierarchical extensions for tens of thousands of nodes.
-
-2. **Conflict Resolution**: Applications must implement semantic reconciliation for divergent versions.
-
-3. **Consistency**: Eventual consistency model - not suitable for applications requiring strong consistency.
-
-## Production Considerations
-
-### Monitoring
-
-Monitor these key metrics:
-- Request latencies (p50, p99, p99.9)
-- Divergent version frequency
-- Hinted handoff queue size
-- Anti-entropy sync progress
-- Node availability
-
-### Operational Tasks
-
-- **Adding Nodes**: Use `Join()` to add new nodes incrementally
-- **Removing Nodes**: Gracefully stop and redistribute data
-- **Backups**: Use Merkle tree snapshots for consistent backups
-- **Capacity Planning**: Monitor load distribution across virtual nodes
+- The system is for learning and experimentation, not production deployment.
+- Dynamo-style conflict resolution is application-defined.
+- `memory` is the default storage engine; `lss` is the meaningful persistence
+  implementation. `boltdb` and `badger` are stubs.
+- Integration tests use fixed local ports; run one copy of the integration
+  package at a time.
+- Maelstrom tests validate selected properties of the real code, but they do
+  not prove correctness.
+- TLA+ specs verify small bounded protocol models, not the Go implementation.
 
 ## References
 
-- [Dynamo: Amazon's Highly Available Key-value Store (SOSP 2007)](https://www.allthingsdistributed.com/files/amazon-dynamo-sosp2007.pdf)
-- [Consistent Hashing and Random Trees (Karger et al.)](https://dl.acm.org/doi/10.1145/258533.258660)
-- [Time, Clocks, and the Ordering of Events (Lamport)](https://lamport.azurewebsites.net/pubs/time-clocks.pdf)
-
-## License
-
-MIT License - see LICENSE file for details
-
-## Contributing
-
-Contributions are welcome! Please see CONTRIBUTING.md for guidelines.
-
-## Acknowledgments
-
-This implementation is based on the Dynamo paper by DeCandia et al. from Amazon. The paper describes techniques used in production at Amazon.com to provide highly available storage for critical services.
+- [Dynamo: Amazon's Highly Available Key-value Store](https://www.allthingsdistributed.com/files/amazon-dynamo-sosp2007.pdf)
+- [Consistent Hashing and Random Trees](https://dl.acm.org/doi/10.1145/258533.258660)
+- [Time, Clocks, and the Ordering of Events](https://lamport.azurewebsites.net/pubs/time-clocks.pdf)
+- [Maelstrom](https://github.com/jepsen-io/maelstrom)
+- [TLA+](https://lamport.azurewebsites.net/tla/tla.html)
