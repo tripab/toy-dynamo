@@ -277,6 +277,18 @@ for local profiles, CI artifacts, result interpretation, and workload extension
 instructions. [MAELSTROM_GUIDE.md](MAELSTROM_GUIDE.md) remains a compact
 command reference.
 
+### TLA+ Model Checks
+
+Focused TLA+ specs for quorum reads/writes, vector clocks, sloppy quorum,
+hinted handoff, and anti-entropy convergence live in `specs/tla/`.
+
+```bash
+make tla-check
+```
+
+See [specs/tla/README.md](specs/tla/README.md) for the checked invariants and
+model scope.
+
 ## Project Structure
 
 ```

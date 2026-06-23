@@ -115,6 +115,28 @@ when a correctness step fails. Download that artifact from the workflow run's
 Artifacts section and open each timestamped `timeline.html` locally. Reports
 are retained for 14 days.
 
+## TLA+ model checks
+
+The focused formal specs live in `specs/tla/`. They model the protocol-level
+arguments separately from the Go implementation:
+
+| Model | Invariant or property |
+|---|---|
+| `QuorumReadWrite` | No acknowledged write is lost when `R + W > N`. |
+| `VectorClock` | Increment, compare, and merge preserve causality. |
+| `SloppyHandoff` | Hints are stored by write recipients and delivered at most once to the correct primary. |
+| `Convergence` | Under fair anti-entropy after quiescence, replicas eventually converge. |
+
+Run all bounded models with:
+
+```sh
+make tla-check
+```
+
+The runner uses `TLA2TOOLS_JAR` when set. If it is absent, it downloads the
+pinned TLC jar to `.context/tla2tools.jar`. The checked configs are deliberately
+small because vector-clock histories and handoff states grow quickly.
+
 ## Adapter architecture
 
 Maelstrom launches one `bin/maelstrom-dynamo` process per logical node and
