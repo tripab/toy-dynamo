@@ -231,30 +231,47 @@ func (n *Node) Stop() error {
 	return n.storage.Close()
 }
 
-// Join adds this node to an existing ring using seed nodes
+// Join adds this node to an existing ring using seed nodes.
+// Seeds are retried with a short backoff because a seed's RPC server may
+// still be starting when this node boots (cluster bootstrap ordering).
 func (n *Node) Join(seeds []string) error {
 	if len(seeds) == 0 {
 		return nil // First node in cluster
 	}
 
-	// Contact seed nodes to get membership list
-	for _, seed := range seeds {
-		members, err := n.membership.SyncWithSeed(seed)
-		if err != nil {
-			continue
-		}
+	attempts := max(1, n.config.JoinRetryAttempts) // tolerate zero-valued configs
 
-		// Add all members to our ring
-		for _, member := range members {
-			if member.NodeID != n.id {
-				n.ring.AddNodeWithTokens(member.NodeID, member.Tokens)
-				n.membership.AddMember(member)
+	var lastErr error
+	for attempt := 0; attempt < attempts; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-time.After(n.config.JoinRetryBackoff):
+			case <-n.stopCh:
+				return fmt.Errorf("node stopped while joining cluster")
 			}
 		}
-		return nil
+
+		// Contact seed nodes to get membership list
+		for _, seed := range seeds {
+			members, err := n.membership.SyncWithSeed(seed)
+			if err != nil {
+				lastErr = err
+				continue
+			}
+
+			// Add all members to our ring
+			for _, member := range members {
+				if member.NodeID != n.id {
+					n.ring.AddNodeWithTokens(member.NodeID, member.Tokens)
+					n.membership.AddMember(member)
+				}
+			}
+			return nil
+		}
 	}
 
-	return fmt.Errorf("failed to join cluster: no seed reachable")
+	return fmt.Errorf("failed to join cluster after %d attempt(s): no seed reachable: %w",
+		attempts, lastErr)
 }
 
 // Get retrieves a value by key

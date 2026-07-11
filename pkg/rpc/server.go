@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"time"
 
@@ -89,7 +90,9 @@ func (s *Server) RegisterMetricsHandler(handler http.HandlerFunc) {
 	s.mux.HandleFunc("/metrics", handler)
 }
 
-// Start starts the RPC server
+// Start starts the RPC server. The listener is bound synchronously so that
+// the server is guaranteed to accept connections once Start returns; bind
+// failures (e.g. port already in use) are returned instead of only logged.
 func (s *Server) Start() error {
 	s.server = &http.Server{
 		Addr:         s.address,
@@ -99,9 +102,14 @@ func (s *Server) Start() error {
 		IdleTimeout:  60 * time.Second,
 	}
 
+	listener, err := net.Listen("tcp", s.address)
+	if err != nil {
+		return fmt.Errorf("failed to listen on %s: %w", s.address, err)
+	}
+	log.Printf("RPC server listening on %s", s.address)
+
 	go func() {
-		log.Printf("RPC server starting on %s", s.address)
-		if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := s.server.Serve(listener); err != nil && err != http.ErrServerClosed {
 			log.Printf("RPC server error: %v", err)
 		}
 	}()

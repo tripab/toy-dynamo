@@ -79,6 +79,17 @@ type Config struct {
 	// EnableRetry enables retry with exponential backoff for RPC calls
 	EnableRetry bool
 
+	// Cluster join retry configuration. Join retries are independent of the
+	// RPC-level EnableRetry setting: joining is a bootstrap operation and a
+	// seed node's server may still be starting when this node boots.
+
+	// JoinRetryAttempts is the number of passes over the seed list before
+	// Join gives up. Values < 1 behave as a single attempt.
+	JoinRetryAttempts int
+
+	// JoinRetryBackoff is the delay between join attempts
+	JoinRetryBackoff time.Duration
+
 	// Admission control settings - throttles background tasks when foreground latency is high
 
 	// AdmissionControlEnabled enables the admission controller
@@ -145,6 +156,9 @@ func DefaultConfig() *Config {
 		CircuitBreakerResetTimeout: 30 * time.Second,
 		EnableCircuitBreaker:       true,
 		EnableRetry:                true,
+		// Cluster join retry configuration
+		JoinRetryAttempts: 5,
+		JoinRetryBackoff:  100 * time.Millisecond,
 		// Admission control defaults
 		AdmissionControlEnabled:     true,
 		AdmissionLatencyThreshold:   100 * time.Millisecond,
